@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jax-morpho"
+version = "0.1.0"
+description = "Differentiable, GPU-scale developmental morphogenesis in JAX: a center-based tissue engine that reproduces real-epithelium statistics, scales to millions of cells, and maps an evolvable genome to form."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+  { name = "James P. Galasyn" },
+  { name = "Claude Théodore" },
+]
+keywords = [
+  "morphogenesis", "developmental-biology", "tissue-mechanics",
+  "center-based-model", "epithelium", "differentiable-simulation",
+  "inverse-design", "jax", "gpu",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Artificial Life",
+]
+dependencies = [
+  # Plain jax = CPU by default (portable, clean CI). GPU users install the
+  # CUDA build alongside:  pip install 'jax[cuda12]'
+  "jax>=0.10",
+  "numpy>=1.24",
+  "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pytest-cov>=4",
+  "pytest-xdist>=3",        # parallel test execution (pytest -n auto)
+  "jax-md>=0.2",            # exercises the neighbor-list scaling tests in CI
+]
+# Cell-list scaling (jax_morpho.scale). Heavy transitive tree; install only
+# when you need O(N) relaxation toward 10^5-10^6 cells: pip install '.[scale]'
+scale = ["jax-md>=0.2"]
+
+[project.urls]
+Homepage = "https://github.com/JimGalasyn/jax-morpho"
+Issues = "https://github.com/JimGalasyn/jax-morpho/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jax_morpho"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["jax_morpho"]
+omit = ["*/examples/*"]
+
+[tool.coverage.report]
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "def __repr__",
+]

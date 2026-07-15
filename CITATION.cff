@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: "jax-morpho: differentiable, GPU-scale developmental morphogenesis in JAX"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - given-names: "James P."
+    family-names: Galasyn
+  - given-names: Claude
+    family-names: Théodore
+repository-code: "https://github.com/JimGalasyn/jax-morpho"
+url: "https://github.com/JimGalasyn/jax-morpho"
+abstract: >-
+  A differentiable, GPU-scale JAX engine for developmental morphogenesis: a
+  center-based tissue model (Morse adhesion/repulsion, autodiff relaxation,
+  cell division) that reproduces real-epithelium topology statistics, scales
+  to millions of cells on GPU via neighbor lists, and maps an evolvable
+  genome to tissue form with gradients that reach the genome — enabling
+  gradient-based inverse design of morphology.
+keywords:
+  - morphogenesis
+  - developmental-biology
+  - tissue-mechanics
+  - center-based-model
+  - epithelium
+  - differentiable-simulation
+  - inverse-design
+  - jax
+  - gpu
+license: MIT
+version: 0.1.0
+# DOI: minted on first Zenodo release; add concept + version DOIs here then.
