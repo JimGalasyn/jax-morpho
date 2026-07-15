@@ -12,7 +12,7 @@ The neighbor-list scaling layer (``jax_morpho.scale``) needs the optional
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from jax_morpho.center_based import (
     A_DEFAULT,
