@@ -111,13 +111,17 @@ observed recombinant response to `Δz̄=Gβ` (via G) vs `s` (naive, via P).
   (small angle) while P misaligns at low allele frequency. *(Bit-identical is
   impossible across MATLAB/Python RNG; calibration = matching the figure's
   quantitative pattern — the G-vs-P angle crossover.)*
-- **0b — reproduce Fig 1C and validate *our* sensitivity three ways.** On their
-  exact ODE, compute the sensitivity by (i) their forward-variational
-  integration (Eq. 3), (ii) our reverse-mode autodiff through the ODE solve,
-  (iii) our implicit-diff at the t=50 steady state — confirm all three agree and
-  that `s·γ ≈ regression α`. **This is the load-bearing calibration of our
-  tooling**, and directly re-tests the unrolled-autodiff failure against a
-  proper solver.
+- **0b — reproduce Fig 1C and validate *our* sensitivity three ways.** ✅
+  (`sensitivity.py`, `test_sensitivity.py`). On their exact ODE, forward-mode
+  autodiff, reverse-mode autodiff, and implicit-diff at the steady state all
+  agree (forward≡reverse to machine precision; implicit to ~1e-8 in float64),
+  and `s·γ ≈ regression α` (ratio ~1.000, their Fig 1C). **Refined finding:**
+  reverse-mode did **not** degrade here (2000-step ODE, float64, clean
+  convergence) — so the mechanical-relaxation failure was a
+  **float32/convergence/conditioning** issue, not a universal "long unrolls
+  break reverse-mode" law. Implicit-diff stays the correct *core* tool
+  (precision- and convergence-robust, scalable); on the mechanical engine we
+  will use it and cross-check against reverse-mode with clean numerics.
 - **0c — unify.** Build G from *our* sensitivity-derived `α = s·γ`, confirm it
   equals the regression G from 0a and predicts the response.
 

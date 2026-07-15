@@ -40,11 +40,19 @@ OPTIMUM = (4.0, 4.0)
 # Development: the toggle-switch ODE, RK4 to steady state (t=50)
 # ---------------------------------------------------------------------------
 
+def toggle_deriv(x, theta, u=0.0):
+    """Toggle-switch ODE right-hand side: state x=(g1,g2), developmental
+    parameters theta=(theta1,theta2), environment u. The canonical model RHS."""
+    g1, g2 = x[0], x[1]
+    th1, th2 = theta[0], theta[1]
+    return jnp.stack([
+        (2.0 + th1) / (1.0 + (g2 / 2.0) ** 2) - 0.4 * g1,
+        (2.0 + th2) / (1.0 + (g1 / (3.0 + u)) ** 2) - 0.4 * g2,
+    ])
+
+
 def _deriv(g, th1, th2, u):
-    g1, g2 = g[0], g[1]
-    dg1 = (2.0 + th1) / (1.0 + (g2 / 2.0) ** 2) - 0.4 * g1
-    dg2 = (2.0 + th2) / (1.0 + (g1 / (3.0 + u)) ** 2) - 0.4 * g2
-    return jnp.stack([dg1, dg2])
+    return toggle_deriv(g, jnp.stack([th1, th2]), u)
 
 
 @partial(jax.jit, static_argnums=(3,))
@@ -64,6 +72,22 @@ def develop(th1, th2, u, n_steps=int(T_END / DT), dt=DT):
 
     g, _ = jax.lax.scan(step, jnp.array(G0), None, length=n_steps)
     return g
+
+
+@partial(jax.jit, static_argnums=(2,))
+def develop_theta(theta, u=0.0, n_steps=int(T_END / DT), dt=DT):
+    """Integrate the toggle switch to steady state as a function of the
+    parameter *vector* theta=(theta1,theta2) (for sensitivity analysis).
+    Same dynamics as ``develop``, exposed for autodiff over theta."""
+    def step(x, _):
+        k1 = toggle_deriv(x, theta, u)
+        k2 = toggle_deriv(x + 0.5 * dt * k1, theta, u)
+        k3 = toggle_deriv(x + 0.5 * dt * k2, theta, u)
+        k4 = toggle_deriv(x + dt * k3, theta, u)
+        return x + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4), None
+
+    x, _ = jax.lax.scan(step, jnp.array(G0), None, length=n_steps)
+    return x
 
 
 _develop_pop = jax.jit(jax.vmap(lambda th1, th2, u: develop(th1, th2, u)))
