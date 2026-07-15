@@ -38,9 +38,11 @@ def implicit_sensitivity(deriv, x_star, theta):
     ``ẋ = deriv(x, theta)`` with respect to theta, by the implicit function
     theorem: ∂x*/∂θ = −(∂deriv/∂x)⁻¹ (∂deriv/∂θ).
 
-    For an energy relaxation, ``deriv = -∇E`` and ``∂deriv/∂x = -Hessian``;
-    this same routine is the core sensitivity tool for the mechanical engine
-    (there the solve is matrix-free CG rather than a dense inverse).
+    For an energy relaxation, ``deriv = -∇E`` and ``∂deriv/∂x = -Hessian``.
+    This reference implementation forms the (small) Jacobians densely and calls
+    ``jnp.linalg.solve``. For the high-dimensional mechanical engine the same IFT
+    relation will be solved matrix-free (CG on Hessian-vector products); the
+    interface is identical, only the linear solve changes.
     """
     A = jax.jacobian(lambda x: deriv(x, theta))(x_star)      # ∂deriv/∂x
     B = jax.jacobian(lambda th: deriv(x_star, th))(theta)    # ∂deriv/∂θ

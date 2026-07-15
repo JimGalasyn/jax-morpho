@@ -53,6 +53,6 @@ class TestFig1C:
         p, n, gamma = 0.5, 3000, 0.01
         g = rng.choice([-1, 0, 1], n, p=[(1 - p) ** 2, 2 * p * (1 - p), p ** 2])
         x1 = np.asarray(dev_batch(jnp.asarray((g * gamma).astype(np.float32))))[:, 0]
-        alpha_reg = np.cov(x1, g)[0, 1] / np.var(g)
+        alpha_reg = np.cov(x1, g)[0, 1] / np.var(g, ddof=1)   # match np.cov's ddof
         alpha_sens = s1 * gamma
         assert abs(alpha_reg / alpha_sens - 1.0) < 0.02

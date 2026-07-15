@@ -217,9 +217,11 @@ def simulate_fig3c(p2, p1=0.5, n_ind=5000, n_replays=50, dt=DT, seed=0):
     th2 = (gs2 * gamma2[:, None]).sum(0)
     u = rng.normal(0, SIGMA_ENV, n_ind)
 
+    # Build the jitted+vmapped developer once (rebuilding it per call would
+    # retrace/recompile inside the replay loop).
+    _devfn = jax.jit(jax.vmap(lambda x, y, z: develop(x, y, z, n_steps, dt)))
     dev = lambda a, b, c: np.asarray(
-        jax.jit(jax.vmap(lambda x, y, z: develop(x, y, z, n_steps, dt)))(
-            jnp.asarray(a), jnp.asarray(b), jnp.asarray(c)))
+        _devfn(jnp.asarray(a), jnp.asarray(b), jnp.asarray(c)))
     z = dev(th1, th2, u)                               # (N, 2) phenotypes
 
     alpha = regression_average_effects(gs1, gs2, z)    # (2L+1, 2)
@@ -230,7 +232,7 @@ def simulate_fig3c(p2, p1=0.5, n_ind=5000, n_replays=50, dt=DT, seed=0):
     # Our sensitivity-derived G (Phase 0c): developmental Jacobian at the
     # population-mean parameters, then G = sum 2pq (gamma*s)(gamma*s)^T.
     theta_bar = jnp.array([float(th1.mean()), float(th2.mean())])
-    x_star = develop_theta(theta_bar, 0.0, 1000, 0.05)
+    x_star = develop_theta(theta_bar, 0.0, n_steps, dt)   # same integration as above
     J = np.asarray(implicit_sensitivity(
         lambda x, th: toggle_deriv(x, th, 0.0), x_star, theta_bar))
     G_sens = build_G_sensitivity(J, gamma1, gamma2, genotype)

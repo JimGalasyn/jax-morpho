@@ -43,7 +43,7 @@ def main():
     for gamma in (0.001, 0.01, 0.05):
         g = rng.choice([-1, 0, 1], n, p=[(1 - p) ** 2, 2 * p * (1 - p), p ** 2])
         x1 = np.asarray(dev_batch(jnp.asarray((g * gamma).astype(np.float32))))[:, 0]
-        a_reg = np.cov(x1, g)[0, 1] / np.var(g)
+        a_reg = np.cov(x1, g)[0, 1] / np.var(g, ddof=1)   # match np.cov's ddof
         print(f"  γ={gamma:5.3f}:  regression α={a_reg:.6f}   s·γ={s1*gamma:.6f}   "
               f"ratio={a_reg/(s1*gamma):.4f}")
     print("\n  → our sensitivity is the correct developmental Jacobian, and it")
