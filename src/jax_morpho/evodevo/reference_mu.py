@@ -26,6 +26,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from jax_morpho.evodevo.sensitivity import implicit_sensitivity
+
 # --- their model constants (sistemaggT.m / LandePrediction_Generate.m) ---
 T_END = 50.0
 DT = 0.01
@@ -136,6 +138,29 @@ def build_G(alpha, genotype):
     return G
 
 
+def build_G_sensitivity(J, gamma1, gamma2, genotype):
+    """G from *sensitivity-derived* average effects: alpha_i = gamma_i * s_{w(i)}
+    where s_{w(i)} is the sensitivity vector (column of J) of the parameter that
+    locus i affects. G = sum_i 2 p_i q_i alpha_i alpha_i^T (Eq. 12 via alpha=s*gamma).
+
+    J: (2 traits, 2 params) developmental Jacobian at the population mean.
+    gamma1, gamma2: (n_loci,) allelic effects on theta1, theta2.
+    genotype: (N, 2*n_loci), first block = theta1 loci, second = theta2 loci."""
+    L = len(gamma1)
+    s_of_locus = [J[:, 0]] * L + [J[:, 1]] * L       # theta1 loci, then theta2
+    gammas = np.concatenate([gamma1, gamma2])
+    G = np.zeros((2, 2))
+    for i in range(2 * L):
+        col = genotype[:, i]
+        n_A2 = np.sum(col == 1) * 2 + np.sum(col == 0)
+        n_A1 = np.sum(col == -1) * 2 + np.sum(col == 0)
+        tot = n_A1 + n_A2
+        p_i, q_i = n_A2 / tot, n_A1 / tot
+        alpha = (gammas[i] * np.asarray(s_of_locus[i]))[:, None]   # (2,1)
+        G += (alpha @ alpha.T) * 2 * p_i * q_i
+    return G
+
+
 def recombine(a1, a2, rng):
     """Their recombine(): one offspring allele from two parental alleles,
     no linkage (Mendelian)."""
@@ -199,8 +224,16 @@ def simulate_fig3c(p2, p1=0.5, n_ind=5000, n_replays=50, dt=DT, seed=0):
 
     alpha = regression_average_effects(gs1, gs2, z)    # (2L+1, 2)
     genotype = np.column_stack([gs1.T, gs2.T])         # (N, 2L)
-    G = build_G(alpha[:-1], genotype)                  # drop intercept row
+    G = build_G(alpha[:-1], genotype)                  # regression G (their 0a)
     P = np.cov((z - z.mean(0)).T)
+
+    # Our sensitivity-derived G (Phase 0c): developmental Jacobian at the
+    # population-mean parameters, then G = sum 2pq (gamma*s)(gamma*s)^T.
+    theta_bar = jnp.array([float(th1.mean()), float(th2.mean())])
+    x_star = develop_theta(theta_bar, 0.0, 1000, 0.05)
+    J = np.asarray(implicit_sensitivity(
+        lambda x, th: toggle_deriv(x, th, 0.0), x_star, theta_bar))
+    G_sens = build_G_sensitivity(J, gamma1, gamma2, genotype)
 
     dist = np.sqrt(((z - np.array(OPTIMUM)) ** 2).sum(1))
     sel = np.argsort(dist)[: n_ind // 2]
@@ -225,10 +258,13 @@ def simulate_fig3c(p2, p1=0.5, n_ind=5000, n_replays=50, dt=DT, seed=0):
         obs.append(zo.mean(0) - mean_all)
     dZ_obs = np.array(obs).mean(0)
 
-    return dict(p2=p2, G=G, P=P, s=s, dZ_lande=dZ_lande, dZ_naive=dZ_naive,
-                dZ_obs=dZ_obs,
+    return dict(p2=p2, G=G, G_sens=G_sens, P=P, s=s,
+                dZ_lande=dZ_lande, dZ_naive=dZ_naive, dZ_obs=dZ_obs,
                 angle_G=angle_deg(dZ_obs, dZ_lande),
-                angle_P=angle_deg(dZ_obs, dZ_naive))
+                angle_P=angle_deg(dZ_obs, dZ_naive),
+                angle_G_sens=angle_deg(dZ_obs, G_sens @ beta),
+                G_rel_frob=float(np.linalg.norm(G - G_sens)
+                                 / (np.linalg.norm(G) + 1e-300)))
 
 
 def run_fig3c(n_ind=5000, n_replays=50, dt=DT, seed=0):

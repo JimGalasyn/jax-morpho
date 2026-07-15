@@ -18,9 +18,13 @@ from jax_morpho.evodevo.reference_mu import run_fig3c
 def main():
     print("Milocco & Uller 2026 Fig 3C — reproduced (toggle-switch development)\n")
     res = run_fig3c(n_ind=5000, n_replays=30, dt=0.05, seed=0)
-    print(f"  {'p2 (MAF)':>10} {'angle(obs, Gβ)':>15} {'angle(obs, Pβ)':>15}")
+    print(f"  {'p2 (MAF)':>10} {'obs∠Gβ (reg)':>13} {'obs∠Gβ (sens)':>14} "
+          f"{'obs∠Pβ':>9} {'G_reg vs G_sens':>16}")
     for r in res:
-        print(f"  {r['p2']:>10.4f} {r['angle_G']:>14.1f}° {r['angle_P']:>14.1f}°")
+        print(f"  {r['p2']:>10.4f} {r['angle_G']:>12.1f}° {r['angle_G_sens']:>13.1f}° "
+              f"{r['angle_P']:>8.1f}° {r['G_rel_frob']:>15.3f}")
+    print("\n  (Phase 0c: 'sens' G is built from our autodiff/implicit sensitivity,")
+    print("   α = γ·s; it matches the regression G and predicts equally well.)")
     lo = [r for r in res if r["p2"] < 0.02]
     hi = [r for r in res if r["p2"] >= 0.2]
     print(f"\n  low-freq  mean: G {np.mean([r['angle_G'] for r in lo]):.1f}°  "

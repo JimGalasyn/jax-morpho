@@ -64,3 +64,29 @@ class TestFig3CCalibration:
         # The development-derived G stays a reasonable predictor throughout.
         assert low_freq["angle_G"] < 30.0
         assert high_freq["angle_G"] < 8.0
+
+
+class TestPhase0cSensitivityG:
+    """Phase 0c: G built from *our* autodiff/implicit sensitivity (alpha =
+    gamma * s) must equal their regression G and predict the response as well."""
+
+    @pytest.fixture(scope="class")
+    def low(self):
+        return simulate_fig3c(0.001, n_ind=2000, n_replays=12, dt=0.05, seed=0)
+
+    @pytest.fixture(scope="class")
+    def high(self):
+        return simulate_fig3c(0.5, n_ind=2000, n_replays=12, dt=0.05, seed=0)
+
+    def test_sensitivity_G_matches_regression_G(self, low, high):
+        assert high["G_rel_frob"] < 0.10
+        assert low["G_rel_frob"] < 0.20
+
+    def test_sensitivity_G_predicts_the_response(self, low, high):
+        assert high["angle_G_sens"] < 8.0
+        assert low["angle_G_sens"] < 15.0
+        # our G predicts about as well as their regression G
+        assert abs(low["angle_G_sens"] - low["angle_G"]) < 6.0
+
+    def test_sensitivity_G_beats_P_at_low_frequency(self, low):
+        assert low["angle_P"] > low["angle_G_sens"] + 8.0

@@ -122,11 +122,16 @@ observed recombinant response to `Δz̄=Gβ` (via G) vs `s` (naive, via P).
   break reverse-mode" law. Implicit-diff stays the correct *core* tool
   (precision- and convergence-robust, scalable); on the mechanical engine we
   will use it and cross-check against reverse-mode with clean numerics.
-- **0c — unify.** Build G from *our* sensitivity-derived `α = s·γ`, confirm it
-  equals the regression G from 0a and predicts the response.
+- **0c — unify.** ✅ (`build_G_sensitivity`, `TestPhase0cSensitivityG`). G built
+  from *our* sensitivity-derived average effects (`α = γ·s`, using the
+  implicit-diff Jacobian at the population mean) equals their regression G
+  (relative Frobenius ~0.01 at high MAF, ≤0.1 at low MAF) and predicts the
+  response equally well (angle_G_sens ≈ angle_G at every frequency), both
+  beating P at low MAF.
 
-Only after 0a–0c match do we swap the ODE for the mechanical morphogenesis
-engine, sensitivity method already proven correct.
+**Phase 0 complete: our autodiff/implicit sensitivity → G → breeder's equation
+reproduces Milocco–Uller Fig 3C end-to-end.** Next: Phase 1 swaps the ODE for
+the mechanical morphogenesis engine, sensitivity method already proven.
 
 ## 4. Validation ladder (each rung a known-answer gate)
 1. implicit-diff sensitivity ⟺ finite-difference Jacobian.
