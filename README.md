@@ -4,6 +4,8 @@
 [![codecov](https://codecov.io/gh/JimGalasyn/jax-morpho/branch/main/graph/badge.svg)](https://codecov.io/gh/JimGalasyn/jax-morpho)
 [![CodeQL](https://github.com/JimGalasyn/jax-morpho/actions/workflows/codeql.yml/badge.svg)](https://github.com/JimGalasyn/jax-morpho/actions/workflows/codeql.yml)
 [![release](https://img.shields.io/github/v/release/JimGalasyn/jax-morpho?include_prereleases&label=release)](https://github.com/JimGalasyn/jax-morpho/releases)
+[![PyPI](https://img.shields.io/pypi/v/jax-morpho)](https://pypi.org/project/jax-morpho/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21383756.svg)](https://doi.org/10.5281/zenodo.21383756)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/JimGalasyn/jax-morpho)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 

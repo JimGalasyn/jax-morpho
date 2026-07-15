@@ -28,4 +28,11 @@ keywords:
   - gpu
 license: MIT
 version: 0.1.1
-# DOI: minted on first Zenodo release; add concept + version DOIs here then.
+doi: 10.5281/zenodo.21383756
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21383756
+    description: Concept DOI (resolves to the latest version)
+  - type: doi
+    value: 10.5281/zenodo.21383757
+    description: Version DOI (v0.1.1)
