@@ -45,6 +45,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from jax_morpho.evodevo.fixed_point import project_out, rigid_modes
+
 # Steepness and interaction cutoff stay global scalars in Phase 1; only the
 # adhesion and spacing fields are per-cell (i.e. genetically addressable).
 A_DEFAULT = 2.5
@@ -149,10 +151,12 @@ def force_residual(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT):
 # Equilibration
 # ---------------------------------------------------------------------------
 
-@partial(jax.jit, static_argnames=("a", "r_max", "max_descent", "max_newton"))
+@partial(jax.jit, static_argnames=("a", "r_max", "max_descent", "max_newton",
+                                   "newton_solver"))
 def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
                 tol=1e-12, max_descent=5000, max_newton=100, newton_tol=1e-4,
-                lr0=0.01, rcond=1e-8):
+                lr0=0.01, rcond=1e-8, newton_solver="cg", cg_tol=1e-10,
+                cg_maxiter=400):
     """Relax to a *genuine* mechanical equilibrium, to machine precision.
 
     Returns ``(x_star, residual, n_iter, converged)`` where ``residual`` is
@@ -167,14 +171,61 @@ def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
        iteration.
     2. **Damped projected Newton** to polish. Near the minimum, ``x ← x − H⁺∇E``
        converges quadratically and reaches ~1e-14 in a handful of steps. The
-       pseudo-inverse is what makes this legal: H is exactly singular here (the
-       rigid modes, plus a trivial mode per padded cell), and ``pinv`` takes the
-       step in the complement — the same gauge choice the sensitivity engine
-       makes, for the same reason. The step is damped because ``newton_tol`` is
-       a guess about where the quadratic basin starts, and a guess should
-       degrade rather than fail: handing over at 1e-2 on a heterogeneous θ field
-       gives a step too large to help, and an undamped Newton then *freezes* at
-       the handoff residual instead of converging slowly.
+       step is damped because ``newton_tol`` is a guess about where the quadratic
+       basin starts, and a guess should degrade rather than fail: handing over at
+       1e-2 on a heterogeneous θ field gives a step too large to help, and an
+       undamped Newton then *freezes* at the handoff residual instead of
+       converging slowly.
+
+    ``newton_solver`` picks how the Newton direction is obtained. Both take the
+    step in the complement of the null space — H is exactly singular here (the
+    rigid modes, plus a trivial mode per padded cell), which is the same gauge
+    choice the sensitivity engine makes, for the same reason.
+
+    - ``"cg"`` (default) — **matrix-free**: projected conjugate gradients on
+      Hessian-vector products. Never forms H. O(N) memory, and the only path
+      that survives scale.
+    - ``"pinv"`` — forms the dense (2N × 2N) Hessian and pseudo-inverts it.
+      O(N²) memory, O(N³) time; obviously correct, and kept as the reference the
+      CG path is gated against.
+
+    Why the default is matrix-free
+    ------------------------------
+    The dense path's real cost is **O(N³) memory, not O(N²)** — and that is worse
+    than it looks. The Hessian itself is only (2N × 2N) — 51 MB at N=1261. But
+    ``jax.hessian`` differentiates *through* the O(N²) pair matrix inside
+    :func:`field_morse_energy`, producing a ``(2N, N, N)`` intermediate: **32 GB
+    at N=1261, 348 GB at N=2791**. Measured on a 16 GB card: ``pinv`` OOMs at
+    **N=1261** while ``cg`` runs, and where both fit (N=331) CG is ~3.6x faster.
+    CG needs only Hessian-vector products, so it never builds that intermediate.
+
+    Necessary, not sufficient — and the next wall is not where I expected
+    ----------------------------------------------------------------------
+    The prediction was that removing the solver wall would expose
+    :func:`field_morse_energy`'s O(N²) pair matrix (dying ~N=20 000, fixable with
+    the neighbour lists ``jax_morpho.scale`` already implements). **Measurement
+    says otherwise: the next wall is the descent stage.** At N=1261 CG-Newton
+    still fails to converge (``max|F| ~ 1``, 5000 descent iterations exhausted),
+    because gradient descent needs O(N) iterations to relax the long-wavelength
+    "breathing" mode of a large blob — the condition number grows with system
+    size, and a hexagonal lattice at ``spacing = r_eq`` is *not* the Morse
+    equilibrium (second neighbours at √3 ≈ 1.73 sit inside ``r_max = 1.8`` and
+    pull), so the whole blob must relax collectively.
+
+    Nor can the descent stage simply be dropped: ``newton_tol = 1e2``
+    ("always Newton, damped") **fails** — it stalls after 10–20 iterations at
+    ``max|F| ~ 0.9``. Far from the minimum H is not positive-definite, so
+    ``H⁻¹∇E`` is not a descent direction and no amount of damping rescues it.
+    Newton is mesh-independent but only *inside* the basin; something has to get
+    it there.
+
+    So organism scale needs a better globalisation (accelerated/preconditioned
+    descent — FIRE or Nesterov, standard in molecular statics, O(√N) instead of
+    O(N)) *before* the energy's O(N²) matters. Note the pipeline may dodge this:
+    individuals are small perturbations of a reference genome whose equilibrium
+    is already known. **Warm-starting from that reference would be a cheat**,
+    though — it biases which basin development lands in and would suppress
+    exactly the multistability §3c measures. Recorded in docs/DESIGN.md §2E.
 
     Why the handoff exists at all
     -----------------------------
@@ -239,6 +290,53 @@ def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
 
     # -- stage 2: damped projected Newton polish --------------------------
     hess_fn = jax.hessian(lambda q: energy(q.reshape(pos.shape)))
+    gflat = lambda qf: grad_fn(qf.reshape(pos.shape)).ravel()
+    amask_flat = jnp.repeat(alive, 2)          # (2N,) over interleaved [x,y]
+
+    def newton_dir_pinv(q):
+        """Dense reference: form H, pseudo-invert. O(N²) memory, O(N³) time."""
+        return jnp.linalg.pinv(hess_fn(q.ravel()), rcond=rcond) @ gflat(q.ravel())
+
+    def newton_dir_cg(q):
+        """Matrix-free: projected CG on Hessian-vector products.
+
+        Solves ``H d = g`` restricted to the complement of the null space. Two
+        distinct null spaces have to be handled, and ``pinv`` used to absorb both
+        for free:
+
+        * the **rigid modes** (2 translations + 1 rotation), spanned by ``Z``;
+        * one trivial mode per **dead/padded cell**, whose forces vanish
+          identically so H has zero rows and columns there.
+
+        Both are removed by making the operator act as the *identity* on them,
+        which leaves it nonsingular without changing the solution on the physical
+        subspace: ``M = P H P + Z Zᵀ + (I − A)`` for rigid projector ``P`` and
+        alive mask ``A``. The right-hand side is projected the same way, so the
+        recovered direction is zero along every null direction — the
+        minimum-norm step, exactly what pinv would have returned.
+        """
+        qf = q.ravel()
+        Z = rigid_modes(q, alive)                       # (2N, 3), orthonormal
+
+        def hvp(v):
+            return jax.jvp(gflat, (qf,), (v,))[1]
+
+        def M(v):
+            w = project_out(Z, v * amask_flat)
+            Hw = hvp(w) * amask_flat
+            return (project_out(Z, Hw)                  # physical subspace
+                    + Z @ (Z.T @ v)                     # identity on rigid modes
+                    + v * (1.0 - amask_flat))           # identity on dead cells
+
+        rhs = project_out(Z, gflat(qf) * amask_flat)
+        d, _ = jax.scipy.sparse.linalg.cg(M, rhs, tol=cg_tol, atol=0.0,
+                                          maxiter=cg_maxiter)
+        return d
+
+    newton_dir = newton_dir_cg if newton_solver == "cg" else newton_dir_pinv
+    if newton_solver not in ("cg", "pinv"):
+        raise ValueError(
+            f"unknown newton_solver {newton_solver!r}; expected 'cg' or 'pinv'")
 
     def nt_cond(state):
         _, it, res, moving = state
@@ -246,9 +344,7 @@ def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
 
     def nt_body(state):
         q, it, res, _ = state
-        g = grad_fn(q).ravel()
-        H = hess_fn(q.ravel())
-        d = (jnp.linalg.pinv(H, rcond=rcond) @ g).reshape(pos.shape) * amask
+        d = newton_dir(q).reshape(pos.shape) * amask
 
         # Damping. An undamped Newton step is only trustworthy inside the
         # quadratic basin, and "inside" is not something we can assert from

@@ -132,14 +132,41 @@ D partial (`quantgen` — G only; β and Δz̄ are Phase 3), E not started.
   > ×30 replicates ×4 arms ≈ **641 000 GPU-h (73 GPU-years)**. This is fleet
   > territory, not one-box territory — see the `run-farm` thread.
 
-  > **⚠ The dense solver dies here too.** `mechanical.equilibrate` polishes with
-  > Newton via `jnp.linalg.pinv` on a **dense** (2N × 2N) Hessian — at 1 M cells
-  > that matrix is **16 TB**. The matrix-free projected-CG path in `fixed_point`
-  > (Hessian-vector products only, never forms H) is the *only* solver that
-  > reaches organism scale. It is built and validated (agrees with `pinv` to
-  > 1.3e-11) but **at 19 cells**, and `equilibrate` does not use it yet.
-  > Promoting the Newton stage to CG-Newton is a prerequisite for layer E at
-  > scale, not an optimisation.
+  > **✅ The dense solver was the first wall — now fixed.** `equilibrate` now
+  > defaults to matrix-free **CG-Newton** (`newton_solver="cg"`; `"pinv"` kept as
+  > the reference it is gated against). The dense path's real cost turned out to
+  > be **O(N³) memory, not O(N²)**: the Hessian is only 51 MB at N=1261, but
+  > `jax.hessian` differentiates *through* `field_morse_energy`'s O(N²) pair
+  > matrix and builds a `(2N, N, N)` intermediate — **32 GB at N=1261, 348 GB at
+  > N=2791**. Measured on the 16 GB card: `pinv` OOMs at **N=1261** where `cg`
+  > runs, and where both fit (N=331) CG is ~3.6× faster. The two reach the *same
+  > organism*: they differ by ~1e-5 living **entirely** in the rigid modes
+  > (physical component a million times smaller), and the Procrustes phenotype is
+  > identical to 2.6e-16 — **the phenotype is solver-independent**, which is a
+  > third independent confirmation of the anholonomy.
+  >
+  > **⚠ The next wall is not where it was predicted.** The expectation was that
+  > removing the solver wall would expose the energy's O(N²) pair matrix (dying
+  > ~N=20 000, fixable with the neighbour lists `scale.py` already implements).
+  > **It doesn't. The binding constraint is the descent stage.** At N=1261
+  > CG-Newton still fails (`max|F| ~ 1`, 5000 descent iterations exhausted):
+  > gradient descent needs O(N) iterations to relax a large blob's
+  > long-wavelength breathing mode, and a hex lattice at `spacing = r_eq` is not
+  > the Morse equilibrium (second neighbours at √3 ≈ 1.73 sit inside
+  > `r_max = 1.8`), so the whole blob must relax collectively. Nor can descent be
+  > dropped: `newton_tol=1e2` ("always Newton, damped") **stalls at
+  > `max|F| ~ 0.9` after 10–20 iterations** — far from the minimum H is not
+  > positive-definite, so `H⁻¹∇E` is not a descent direction and damping cannot
+  > rescue it. Newton is mesh-independent only *inside* the basin.
+  >
+  > So organism scale next needs a better **globalisation** (accelerated or
+  > preconditioned descent — FIRE / Nesterov, standard in molecular statics,
+  > O(√N) instead of O(N)), *then* the neighbour-list energy. The pipeline may
+  > partly dodge this, since individuals are small perturbations of a reference
+  > genome whose equilibrium is known — but **warm-starting from that reference
+  > is a cheat**: it biases which basin development lands in and would suppress
+  > exactly the multistability §3c measures. Development starts from a
+  > primordium, or it isn't development.
 
 ### Placement (decision #4)
 Everything lives in **`jax_morpho.evodevo`** for now (refactor later). The

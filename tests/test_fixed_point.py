@@ -82,6 +82,72 @@ class TestEquilibrium:
 # Gauge structure
 # ---------------------------------------------------------------------------
 
+class TestCGNewton:
+    """The matrix-free Newton direction — the only solver that survives scale.
+
+    The dense path's cost is O(N³) *memory*: ``jax.hessian`` differentiates
+    through ``field_morse_energy``'s O(N²) pair matrix and builds a ``(2N, N, N)``
+    intermediate (32 GB at N=1261, where the Hessian itself is 51 MB). CG needs
+    only Hessian-vector products.
+    """
+
+    def test_cg_and_pinv_reach_the_same_form(self, tissue):
+        """Not the same *coordinates* — the same *organism*.
+
+        The two solvers take different paths to the same basin, so they differ by
+        a rigid motion: the developmental anholonomy again (§ TestGaugeIsRotationOnly).
+        Measured: the difference is ~1e-5 and lives **entirely** in the rigid
+        modes, with the physical component a million times smaller — and the
+        Procrustes phenotype is identical to machine precision. Swapping the
+        linear solver inside Newton moves the orientation and nothing else.
+        """
+        pos0, alive, theta = (tissue[k] for k in ("pos0", "alive", "theta"))
+        xp, _, _, ok_p = M.equilibrate(pos0, alive, theta, tol=TOL,
+                                       newton_solver="pinv")
+        xc, _, _, ok_c = M.equilibrate(pos0, alive, theta, tol=TOL,
+                                       newton_solver="cg")
+        assert bool(ok_p) and bool(ok_c)
+
+        diff = np.asarray(xc - xp).ravel()
+        Z = np.asarray(FP.rigid_modes(xp, alive))
+        rigid = Z @ (Z.T @ diff)
+        physical = diff - rigid
+        assert np.linalg.norm(diff) > 1e-9                    # they *do* differ
+        assert np.linalg.norm(physical) < 1e-9                # ...but not in form
+        assert np.linalg.norm(physical) < 1e-3 * np.linalg.norm(rigid)
+
+    def test_phenotype_is_solver_independent(self, tissue):
+        """The property that makes the readout worth its cost: change the
+        numerics, and the science does not move."""
+        from jax_morpho.evodevo import phenotype as PH
+
+        pos0, alive, theta, n = (tissue[k] for k in ("pos0", "alive", "theta", "n"))
+        idx = jnp.arange(n)
+        xp = M.equilibrate(pos0, alive, theta, tol=TOL, newton_solver="pinv")[0]
+        xc = M.equilibrate(pos0, alive, theta, tol=TOL, newton_solver="cg")[0]
+        ref = PH.make_reference(xp, idx)
+        zp = PH.procrustes_shape(xp, idx, ref)
+        zc = PH.procrustes_shape(xc, idx, ref)
+        assert float(jnp.linalg.norm(zc - zp)) < 1e-12
+
+    def test_cg_handles_dead_cells(self):
+        """``pinv`` absorbed the padded cells' null directions for free; CG has
+        to be told about them (the operator acts as the identity there)."""
+        P = M.hex_blob(1)
+        n_live = P.shape[0]
+        pos = jnp.concatenate([P, jnp.array([[9.0, 9.0], [11.0, 9.0]])])
+        alive = jnp.concatenate([jnp.ones(n_live), jnp.zeros(2)])
+        x, res, _, ok = M.equilibrate(pos, alive, M.uniform_theta(n_live + 2),
+                                      tol=TOL, newton_solver="cg")
+        assert bool(ok), f"CG failed with dead cells: max|F| = {float(res):.3e}"
+        assert float(jnp.abs(x[n_live:] - pos[n_live:]).max()) < 1e-14
+
+    def test_unknown_newton_solver_rejected(self, tissue):
+        with pytest.raises(ValueError, match="unknown newton_solver"):
+            M.equilibrate(tissue["pos0"], tissue["alive"], tissue["theta"],
+                          newton_solver="dense-ish")
+
+
 class TestGauge:
     def test_exactly_three_rigid_zero_modes(self, tissue):
         x, alive, theta, n = (tissue[k] for k in ("x", "alive", "theta", "n"))
