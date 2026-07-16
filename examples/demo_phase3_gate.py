@@ -61,26 +61,36 @@ def main():
     print("\n== GATE #3: does a development-derived G predict the response? ==")
     print("   genes 0,1 swept; genes 2,3 held at p=0.5; optimum FIXED across the sweep")
     print("   'noise floor' = arcsin(1/snr): the best ANY prediction could show\n")
-    print("        p    angle_G   angle_P   noise floor   snr    h^2   verdict")
+    print("   THREE SEEDS shown, deliberately: a single seed can look like a clean")
+    print("   monotone Fig-3C and it is a lucky draw. Read the spread, not a row.\n")
     opt = RS.reference_optimum(org, arch)
-    for p in (0.5, 0.25, 0.125, 0.0625, 0.03125):
-        r = RS.simulate_response(p, org, arch, optimum=opt, n_ind=700,
-                                 n_replays=8, seed=0)
-        ok = r["snr"] > 3.0
-        verdict = ("G at the floor" if ok and r["angle_G"] < 2.5 * r["noise_angle"]
-                   else "resolved" if ok else "NOISE — response below the floor")
-        print(f"   {r['p']:7.5f}  {r['angle_G']:6.2f}°  {r['angle_P']:7.2f}°"
-              f"   {r['noise_angle']:8.2f}°  {r['snr']:5.1f}  {r['heritability']:5.2f}"
-              f"   {verdict}")
+    ps = (0.5, 0.25, 0.125, 0.0625, 0.03125)
+    for seed in (0, 1, 2):
+        rs = [RS.simulate_response(p, org, arch, optimum=opt, n_ind=700,
+                                   n_replays=8, seed=seed) for p in ps]
+        mono = all(rs[i]["angle_P"] < rs[i + 1]["angle_P"] for i in range(len(rs) - 1))
+        print(f"   seed={seed}   p:      " + "".join(f"{p:>9.4f}" for p in ps))
+        print(f"            angle_G:" + "".join(f"{r['angle_G']:>8.1f}°" for r in rs))
+        print(f"            floor:  " + "".join(f"{r['noise_angle']:>8.1f}°" for r in rs))
+        print(f"            angle_P:" + "".join(f"{r['angle_P']:>8.1f}°" for r in rs)
+              + f"   monotone={mono}")
+        print(f"            snr:    " + "".join(f"{r['snr']:>9.1f}" for r in rs) + "\n")
 
-    print("\n   G's error sits AT the noise floor -> consistent with exact.")
-    print("   P's is an order of magnitude above it -> a real systematic error.")
-    print("   Below p~0.125 the response falls under the noise floor: the")
-    print("   response shrinks with 2pq while the noise (set by the environment-")
-    print("   dominated phenotypic sd) does not. M-U buy that tail with 5000 x 50")
-    print("   replays ~ 5e5 developments/point; we spend ~1e4. And it CANNOT be")
-    print("   bought by raising sigma_gamma: that lifts snr but breaks the linear")
-    print("   regime G lives in (measured: 0.02->0.08 sends angle_G 3.3deg -> 18.8deg).")
+    print("   READ THIS AS: at p >= 0.25, where snr is comfortable, G's error sits")
+    print("   AT the noise floor -> consistent with EXACT, while P is 20-114deg off")
+    print("   -> a real systematic error. That contrast is robust across seeds and")
+    print("   is what gate #3 asserts.")
+    print()
+    print("   NOT claimed: the monotone growth of angle_P as p -> 0. Seed 0 shows it")
+    print("   beautifully; seeds 1 and 2 do not. It is not a stable feature at these")
+    print("   sample sizes -- the response shrinks with 2pq while the noise floor,")
+    print("   set by the environment-dominated phenotypic sd, does not, so snr dies")
+    print("   and the low-p angles are noise (watch the floor climb past 20deg).")
+    print("   M-U buy that tail with 5000 x 50 replays ~ 5e5 developments/point;")
+    print("   we spend ~1e4. And it CANNOT be bought by raising sigma_gamma: that")
+    print("   lifts snr but breaks the linear regime G lives in (measured:")
+    print("   0.02 -> 0.08 sends angle_G 3.3deg -> 18.8deg). Gate #2's small-")
+    print("   perturbation constraint and gate #3's snr pull against each other.")
 
     # -- the reverse-mode path ---------------------------------------------
     print("\n== the reverse-mode path: dz = J M J^T beta, no G, no J ==")
