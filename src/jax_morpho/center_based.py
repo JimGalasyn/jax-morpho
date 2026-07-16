@@ -56,11 +56,29 @@ def morse_energy(pos, alive, D, a, r_eq, r_max):
 
 @partial(jax.jit, static_argnums=(6, 7, 8))
 def relax(pos, alive, D, a, r_eq, r_max, n_steps=200, lr=0.02, max_disp=0.1):
-    """Gradient descent to mechanical equilibrium on the Morse energy.
+    """Fixed-step gradient descent on the Morse energy, toward equilibrium.
 
     Uses a smooth, always-finite step clip (no ``jnp.where``) so the whole
     relaxation stays autodiff-differentiable w.r.t. the force parameters —
     the inverse-design hook.
+
+    .. warning::
+       **This does not converge to a fixed point, and more steps do not help.**
+       When the effective step exceeds the stability limit ``2/λ_max`` of the
+       stiffest mode, the clip does not diverge — it stabilises the instability
+       into a *period-2 limit cycle*. The iterate then orbits between two points
+       forever, so it looks converged (bounded energy, constant gradient norm)
+       while ``|∇E|`` never falls. Measured on a 12-cell blob at the defaults:
+       ``|∇E| = 3.34`` at ``n_steps=200`` and still 3.34 at 100 000, with
+       ``|p_{k+2} − p_k| = 1e-16`` against ``|p_{k+1} − p_k| = 0.05``.
+
+       This is fine for what it is used for here — growth-and-relax packing
+       (:func:`grow_relax`), where the relaxation-per-division ratio is a tuning
+       knob and the epithelial topology statistics are calibrated against this
+       exact behaviour. It is **not** usable where a genuine equilibrium is
+       required, notably as input to implicit differentiation. For that, use
+       :func:`jax_morpho.evodevo.mechanical.equilibrate`, which reports its
+       residual and reaches ``max|F| ~ 1e-14``. See docs/DESIGN.md §1.
     """
     grad_fn = jax.grad(morse_energy)
     amask = alive[:, None]
