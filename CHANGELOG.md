@@ -4,6 +4,55 @@ All notable changes to this project are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features).
 
+## [Unreleased] — Phase 1: the sensitivity engine on the mechanical engine
+
+Phase 0 calibrated the sensitivity machinery against Milocco & Uller's ODE.
+Phase 1 swaps in **our** development — a tissue relaxed to mechanical
+equilibrium — and gates it against finite differences.
+
+### Added — `jax_morpho.evodevo`
+- **`mechanical`** — development as relaxation of a tissue to mechanical
+  equilibrium, with **θ a per-cell field** (adhesion `D[i]`, preferred spacing
+  `r_eq[i]`) rather than a couple of global scalars. Differential adhesion is the
+  load-bearing sorting mechanism, so this is the seam a genome can write into.
+  `equilibrate()` reaches a *genuine* fixed point (`max|F| ~ 1e-14`) and reports
+  its residual; a quintic switch makes the truncated potential C², which the
+  Hessian requires.
+- **`fixed_point`** — implicit sensitivity of a general fixed point `F(x*,θ)=0`,
+  with energy minimisation as the default instance. Dense pseudo-inverse and
+  matrix-free projected CG (Hessian-vector products only) paths, plus
+  `rigid_modes` and a finite-difference reference.
+- **Gate #1** (validation-ladder rung 1): implicit-diff ⟺ finite differences to
+  **`4.58e-09`**. 16 tests; `examples/demo_phase1_gate.py`.
+
+### Fixed / corrected
+- **`center_based.relax` does not converge**, and v0.2.0's explanation of why
+  autodiff failed through it was wrong. It is not that reverse-mode "degrades
+  with unroll length" — Phase 0b already found a 2000-step unroll that didn't
+  degrade at all. The clipped fixed step turns the stiffest mode's linear
+  instability into a *stable period-2 limit cycle*: `|∇E| = 3.34` at 200 steps
+  and still 3.34 at 100 000, `|p_{k+2} − p_k| = 1e-16`. Autodiff was
+  differentiating an orbit, not an equilibrium. The conclusion (use implicit
+  diff) stands; the argument is replaced. `relax`'s behaviour is unchanged — the
+  epithelial topology calibration is tuned against it — but it is now documented
+  as unfit for equilibrium work, and `evodevo.mechanical.equilibrate` is the
+  supported path. See docs/DESIGN.md §1.
+
+### Notes
+- **The Hessian at a tissue equilibrium is exactly singular** (3 zero modes in 2D:
+  2 translations + 1 rotation) — a degeneracy forced by rigid-invariance, not
+  ill-conditioning. `linalg.solve` is the wrong tool; the pseudo-inverse is the
+  right one.
+- **The developmental gauge is anholonomic.** Relaxation conserves the centre of
+  mass exactly (~1e-15), but *not* orientation: zero net torque at every step
+  still accumulates net rotation as the shape deforms — a geometric phase (the
+  falling-cat effect). The equilibrium **form** is a function of θ; its
+  **orientation** is a functional of the whole developmental path. This makes the
+  planned Procrustes readout load-bearing rather than cosmetic: it is what makes
+  the phenotype a well-defined function of the genotype.
+- A Gaussian cloud of cells is not a tissue — it relaxes into disconnected
+  fragments and ∂x*/∂θ genuinely does not exist. Development must start cohesive.
+
 ## [0.2.0] — Closing the developmental loop: calibrated evo-devo
 
 This release adds **`jax_morpho.evodevo`**, the layer that turns jax-morpho from

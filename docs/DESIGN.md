@@ -25,8 +25,31 @@ attempting a novel scientific study.
 
 Empirically established (this repo): **naive reverse-mode autodiff through the
 unrolled relaxation is not the developmental sensitivity** — it disagrees with
-finite differences and *degrades with unroll length*. The correct object is the
-**implicit sensitivity of the developmental equilibrium**.
+finite differences. The correct object is the **implicit sensitivity of the
+developmental equilibrium**.
+
+> **Mechanism corrected (Phase 1).** This document originally attributed that
+> failure to reverse-mode *degrading with unroll length*. That diagnosis was
+> wrong, and Phase 0b already saw the first crack in it: on the M-U ODE, a
+> 2000-step unroll did **not** degrade at all. The real cause is upstream of
+> autodiff. `center_based.relax` **never reaches a fixed point**: its clipped
+> fixed step turns the linear instability of the stiffest mode into a *stable
+> period-2 limit cycle*. Measured on a 12-cell blob — effective step 0.0142–0.0197
+> straddling the stability limit `2/λ_max = 0.01398` — the iterate orbits
+> forever: `|∇E| = 3.34` at 200 steps and still 3.34 at 100 000, with
+> `|p_{k+2} − p_k| = 1e-16` while `|p_{k+1} − p_k| = 0.05`. The energy alternates
+> between two values. It *looks* converged (bounded energy, constant gradient
+> norm) and is not.
+>
+> So autodiff was never differentiating an equilibrium — it was differentiating
+> a limit cycle, and longer unrolls simply backprop through more orbits. There is
+> no "long unrolls break reverse-mode" law here. **The conclusion survives; the
+> argument for it is replaced.** Implicit-diff remains the correct core tool, now
+> for its actual reasons: it is defined by `F(x*,θ)=0` rather than by a step
+> count, so it *cannot* be fooled by a relaxation that silently failed to
+> converge — and it forces the convergence question into the open, since it needs
+> a real fixed point as input. Pinned by
+> `test_fixed_point.py::test_relax_never_converges_period_2_limit_cycle`.
 
 Write development as a fixed point `F(x*, θ) = 0`. Then, by the implicit
 function theorem,
@@ -130,19 +153,79 @@ observed recombinant response to `Δz̄=Gβ` (via G) vs `s` (naive, via P).
   beating P at low MAF.
 
 **Phase 0 complete: our autodiff/implicit sensitivity → G → breeder's equation
-reproduces Milocco–Uller Fig 3C end-to-end.** Next: Phase 1 swaps the ODE for
-the mechanical morphogenesis engine, sensitivity method already proven.
+reproduces Milocco–Uller Fig 3C end-to-end.**
+
+## 3b. Phase 1 — the sensitivity engine on the mechanical engine ✅
+
+Swaps their ODE for our mechanical development, and gates it against finite
+differences (validation-ladder rung 1). `mechanical.py` + `fixed_point.py`,
+16 tests.
+
+**θ is now a per-cell field** — adhesion `D[i]` and preferred spacing `r_eq[i]`,
+mixed pairwise (`D_ij = √(D_i D_j)`, `r_eq_ij = (r_eq_i+r_eq_j)/2`). Differential
+adhesion is the load-bearing sorting mechanism, so this is the seam layer A's
+GRN writes into. Uniform fields reproduce `center_based`'s *forces* exactly
+(the energies differ by a constant per pair — the shift `center_based` pays for
+its C⁰ truncation; here a quintic switch makes the potential C², which the
+Hessian requires).
+
+### Gate #1 — implicit-diff ⟺ finite differences
+**Relative difference `4.58e-09`** on the gauge-invariant subspace, 19-cell
+tissue, non-uniform θ (38 parameters). Reproduce with
+`python examples/demo_phase1_gate.py`. Three findings were load-bearing:
+
+- **The equilibrium must be real.** Gate #1 divides an equilibrium difference by
+  `2·eps`, so the FD reference is only as good as the solve. A textbook Armijo
+  line search stalls at `max|F| ~ 1e-7` and then drifts *upward*: near the
+  minimum the per-step energy decrease (~1e-14) falls below float64's absolute
+  resolution of E (~2e-15) and the sufficient-decrease test becomes roundoff
+  noise. That would have put ~5% noise on the reference and made the gate
+  vacuous. `equilibrate` therefore hands off from Armijo descent to **projected
+  Newton** (which tests gradients, never energy differences) and reaches
+  `max|F| ~ 1e-14`.
+- **The Hessian is exactly singular** — 3 zero modes in 2D (2 translations + 1
+  rotation), spectrum `[0, 0, 0, 6.36, 9.56, ...]` against `λ_max ~ 263`. Not
+  ill-conditioning: a degeneracy, forced by rigid-invariance of the energy.
+  `jnp.linalg.solve` is the wrong call; the pseudo-inverse (equivalently,
+  projected CG — the two agree to `1.3e-11`, and CG never forms the Hessian) is
+  the right one.
+- **A Gaussian cloud is not a tissue.** Scattered at the scale of `r_max` it
+  relaxes into disconnected fragments; each carries its own zero modes, their
+  relative placement is energetically free, and **∂x*/∂θ does not exist**. The
+  first gate attempt failed this way (>3 zero modes, `|J| ~ 49`). Development
+  must start from a cohesive blob — biologically obvious, and the condition for
+  the IFT to apply.
+
+### The gauge is anholonomic (why Procrustes is load-bearing)
+Gate #1 passes on the *gauge-invariant* subspace, and the discarded part is not
+a rounding detail — it is **entirely rotation**, and it is large (~5.2 against a
+Jacobian of scale ~1). Decomposed: translation components `1.7e-07`/`7.6e-08`
+(= FD noise; the centre of mass is conserved along the path to `3.8e-15`),
+rotation `5.17`.
+
+Each gradient step carries zero net torque, yet net rotation *accumulates*,
+because the modes rotate with the shape as it deforms — a geometric phase, the
+falling-cat effect. **The equilibrium form is a function of θ; its orientation is
+a functional of the whole developmental trajectory.** No fixed-point method can
+reproduce it, and none should.
+
+This promotes §2C's Procrustes decision from convenience to necessity: alignment
+is not tidying-up before comparing shapes, it is what makes the phenotype a
+well-defined function of the genotype at all. Absent it, "phenotype" carries a
+path-dependent geometric-phase term. Pinned by `TestGaugeIsRotationOnly`.
+
+Next: Phase 2 — GRN genome map + landmark/Procrustes phenotype + gate #2.
 
 ## 4. Validation ladder (each rung a known-answer gate)
-1. implicit-diff sensitivity ⟺ finite-difference Jacobian.
+1. implicit-diff sensitivity ⟺ finite-difference Jacobian. ✅ `4.58e-09` (§3b)
 2. `G = J M Jᵀ` ⟺ empirical `Cov(phi(a))` in the small-perturbation regime.
-3. reproduce M-U Fig 3C / Fig 1C on their model (Phase 0).
+3. reproduce M-U Fig 3C / Fig 1C on their model (Phase 0). ✅
 4. multi-generation loop matches quantitative-genetic expectations.
 No layer ships without its number.
 
 ## 5. Sequencing
-0. **Phase 0 calibration** (0a ✅ → 0b → 0c).
-1. implicit-diff sensitivity engine + gate #1.
+0. **Phase 0 calibration** (0a ✅ → 0b ✅ → 0c ✅).
+1. implicit-diff sensitivity engine + gate #1. ✅ (§3b — rel. diff `4.58e-09`)
 2. GRN genome map + landmark/Procrustes phenotype (non-degenerate) + gate #2.
 3. quant-gen layer on the mechanical engine; reproduce the Fig-3C *pattern* with
    our development + gate #3.
