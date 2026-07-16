@@ -113,6 +113,34 @@ D partial (`quantgen` — G only; β and Δz̄ are Phase 3), E not started.
   → repeat. Seams: reproduction model, drift, gene flow, **selection = env or
   player**. This layer *is* the science artifact and the game loop.
 
+  > **⚠ vmap-over-population does not survive the organism scale (measured
+  > 2026-07-16, RTX 4090 16 GB, `scale.relax_neighbor_list`).** It costs
+  > **~2.2 KB/cell**, so a million-cell organism peaks at **2.21 GB → ~7
+  > organisms per 16 GB card**, and 2 M cells OOMs outright. A population of
+  > 1000 million-cell organisms needs **2.2 TB** — ~138 such GPUs *just to hold
+  > one generation*. So "population = vmap axis" is a **small-organism design**
+  > (fine at Phase 2's 19 cells, where 400 individuals vmap trivially; dead at
+  > 10⁶). At organism scale the parallelism **inverts**: one organism saturates a
+  > device and the population becomes *outer* — many independent runs across many
+  > devices. The run unit changes with size: at 10²–10³ cells a run is a campaign
+  > leg with the population vmapped inside; at 10⁶ cells a run is **one
+  > individual's development**.
+  >
+  > Budget at 1 M cells, from measured throughput (2.08e7 cell-steps/s;
+  > development ≈ 2·N·relax_steps ≈ 4e8 cell-steps ≈ **19 s/organism**):
+  > `P=100, G=100` → 53 GPU-h/lineage; `P=1000, G=1000` → 5342 GPU-h/lineage,
+  > ×30 replicates ×4 arms ≈ **641 000 GPU-h (73 GPU-years)**. This is fleet
+  > territory, not one-box territory — see the `run-farm` thread.
+
+  > **⚠ The dense solver dies here too.** `mechanical.equilibrate` polishes with
+  > Newton via `jnp.linalg.pinv` on a **dense** (2N × 2N) Hessian — at 1 M cells
+  > that matrix is **16 TB**. The matrix-free projected-CG path in `fixed_point`
+  > (Hessian-vector products only, never forms H) is the *only* solver that
+  > reaches organism scale. It is built and validated (agrees with `pinv` to
+  > 1.3e-11) but **at 19 cells**, and `equilibrate` does not use it yet.
+  > Promoting the Newton stage to CG-Newton is a prerequisite for layer E at
+  > scale, not an optimisation.
+
 ### Placement (decision #4)
 Everything lives in **`jax_morpho.evodevo`** for now (refactor later). The
 implicit-diff sensitivity is a candidate to promote into core (it would also fix
