@@ -115,9 +115,11 @@ E not started (Phase 4).
   player**. This layer *is* the science artifact and the game loop.
 
   > **⚠ vmap-over-population does not survive the organism scale (measured
-  > 2026-07-16, RTX 4090 16 GB, `scale.relax_neighbor_list`).** It costs
+  > 2026-07-16, RTX 4090 **Laptop** 16 GB — *not* a desktop 4090; see §5b's
+  > provenance warning — `scale.relax_neighbor_list`).** It costs
   > **~2.2 KB/cell**, so a million-cell organism peaks at **2.21 GB → ~7
-  > organisms per 16 GB card**, and 2 M cells OOMs outright. A population of
+  > organisms per 16 GB laptop card** (**~10 per rented 24 GB desktop 4090**),
+  > and 2 M cells OOMs outright on 16 GB. A population of
   > 1000 million-cell organisms needs **2.2 TB** — ~138 such GPUs *just to hold
   > one generation*. So "population = vmap axis" is a **small-organism design**
   > (fine at Phase 2's 19 cells, where 400 individuals vmap trivially; dead at
@@ -132,6 +134,15 @@ E not started (Phase 4).
   > `P=100, G=100` → 53 GPU-h/lineage; `P=1000, G=1000` → 5342 GPU-h/lineage,
   > ×30 replicates ×4 arms ≈ **641 000 GPU-h (73 GPU-years)**. This is fleet
   > territory, not one-box territory — see the `run-farm` thread.
+  >
+  > **⚠ The 73-GPU-year case is not purchasable, at any price.** Live survey by
+  > the `run-farm` session (2026-07-16, 13 real rentals, $0.19): **Vast lists 598
+  > GPUs total** across all types and box sizes, and only **~42% of created
+  > instances ever reach `running`** → **~251 usable**. So 641 000 GPU-h is
+  > **~106 days of wall-clock**, not a fleet-week. The modest end (6410 GPU-h)
+  > is ~25 hours and is fine. Treat the worst case as **out of scope for this
+  > marketplace** rather than merely expensive; an elastic provider (Modal) is
+  > the only path to the top of the range.
 
   > **✅ The dense solver was the first wall — now fixed.** `equilibrate` now
   > defaults to matrix-free **CG-Newton** (`newton_solver="cg"`; `"pinv"` kept as
@@ -450,19 +461,36 @@ records what to do about it. **The binding constraint is money, not wall-clock**
 — so the optimisation target is *cost per unit of science*, and cost has to be a
 first-class quantity in the architecture rather than a post-hoc surprise.
 
+> **⚠ Partly falsified by the live survey (2026-07-16), and worth keeping visible
+> rather than quietly editing.** "Money, not wall-clock" was written against an
+> assumed ~1000-GPU spot pool. The real marketplace has **~251 usable GPUs**, which
+> is a *hard* ceiling no budget raises — so above roughly $5k the two constraints
+> swap and **wall-clock binds**: $20k buys ~11 days, and §2E's worst case is ~106.
+> Money still binds in the $1k–$5k band this section is aimed at, so the framing
+> survives *where it is used*. But cost-per-unit-of-science is now the right target
+> only below a capacity ceiling that the architecture must also model.
+
 ### Who this is for (it decides the requirements)
 Not only us on one box. The intended user includes **funded researchers — the
 Milocco–Uller community itself — spending grant money at $1k–$20k per campaign**.
 From the measured cost model that envelope is not aspirational:
 
-| budget | GPU-h (spot ~$0.30) | campaign it buys at 10⁶ cells |
-|---|---|---|
-| $1 000 | 3 300 | P=G≈175, 10 replicates × 2 arms |
-| $5 000 | 16 700 | P=G≈390, 10 replicates × 2 arms |
-| $20 000 | 66 700 | P=G≈790, 10 replicates × 2 arms |
+| budget | GPU-h (spot ~$0.30) | campaign it buys at 10⁶ cells | wall-clock @ ~251 usable |
+|---|---|---|---|
+| $1 000 | 3 300 | P=G≈175, 10 replicates × 2 arms | ~13 h |
+| $5 000 | 16 700 | P=G≈390, 10 replicates × 2 arms | ~2.8 days |
+| $20 000 | 66 700 | P=G≈790, 10 replicates × 2 arms | ~11 days |
 
-(The 73-GPU-year worst case in §2E is ~$190k — *above* grant scale. The band that
-matters is $1k–$20k, and it lands squarely on a publishable design.)
+(The 73-GPU-year worst case in §2E is ~$190k — *above* grant scale, **and not
+purchasable on Vast at any price**: ~106 days of wall-clock against a live-surveyed
+~251 usable GPUs. The band that matters is $1k–$20k, and it lands squarely on a
+publishable design.)
+
+**The wall-clock column is not the GPU-h column divided by 1000.** The live survey
+(§2E) found **598 GPUs listed, ~251 usable** — that is the whole marketplace, not
+our share of it. A campaign estimator that reports GPU-h without reporting
+*elapsed* will let someone buy a feasible-looking price for an infeasible schedule.
+Report both.
 
 Grant money carries accountability, which turns four soft nice-to-haves into
 hard requirements:
@@ -484,20 +512,54 @@ And one that is ours alone, and follows from the honesty frame (§0, §6):
   an external scientist is to trust a G computed by this engine, the calibration
   should re-run alongside their result, not be cited from a paper.
 
-### Measured cost model (RTX 4090, 16 GB, 2026-07-16 — reproduce before trusting)
-| quantity | measured |
-|---|---|
-| memory | **~2.2 KB/cell** (float32, incl. neighbour list + autodiff tape) |
-| throughput | **2.08e7 cell-steps/s** at 1 M cells (47.98 ms/relax step) |
-| 1 M-cell organism | 2.21 GB → **~7 per 16 GB card**; 2 M cells OOMs |
-| development, primordium→adult | ≈ 2·N·relax_steps ≈ 4e8 cell-steps ≈ **19 s** |
-| float64 | **~4x slower, 2x memory** (bandwidth-bound — *not* the 64x the 4090's
-  1:64 FP64:FP32 spec ratio suggests; measured, because the spec-sheet guess is
-  wrong by 16x) |
+### Measured cost model (RTX 4090 **Laptop**, 16 GB, 2026-07-16)
 
-Everything below follows from those five numbers. A campaign estimator should be
+> **⚠ Provenance warning — read before quoting any row.** This was measured on an
+> **RTX 4090 Laptop GPU**, which is **not the card any of this runs on in
+> production**. It is a different die with roughly half the machine:
+>
+> | | laptop 4090 (the box these were measured on) | desktop 4090 (what Vast rents) |
+> |---|---|---|
+> | die | AD103 | AD102 |
+> | CUDA cores | 9 728 | 16 384 |
+> | VRAM | **16 GB** | **24 GB** |
+> | bandwidth | ~576 GB/s | ~1008 GB/s |
+>
+> The original header said "RTX 4090, 16 GB" — honest about the memory, and
+> misleading about everything else, since "RTX 4090" reads as the desktop part.
+> The `run-farm` session read it that way, correctly, and derived ~10 organisms
+> per card against this table's ~7. **They were right.** Caught 2026-07-16 only
+> because the two numbers disagreed across sessions.
+>
+> **The general lesson, and it is the one this section exists to enforce: the
+> provenance of a number decays faster than the number.** `2.08e7 cell-steps/s`
+> survived fine; *"on what?"* fell off within hours, under a header that already
+> said "reproduce before trusting". Every row below is **pessimistic** for a
+> rented card by an unknown factor — pessimistic is the safe direction for a
+> budget, but the attribution was still wrong.
+
+| quantity | measured (laptop 4090) | on a rented desktop 4090 |
+|---|---|---|
+| memory | **~2.2 KB/cell** (float32, incl. neighbour list + autodiff tape) | same (hardware-independent) |
+| throughput | **2.08e7 cell-steps/s** at 1 M cells (47.98 ms/relax step) | **unmeasured** — see below |
+| 1 M-cell organism | 2.21 GB → **~7 per 16 GB card**; 2 M cells OOMs | **~10 per 24 GB card** (= 24/2.21; solid) |
+| development, primordium→adult | ≈ 2·N·relax_steps ≈ 4e8 cell-steps ≈ **19 s** | **unmeasured** — see below |
+| float64 | **~4x slower, 2x memory** (bandwidth-bound — *not* the 64x the 1:64 FP64:FP32 spec ratio suggests; measured, because the spec-sheet guess is wrong by 16x) | ratio likely similar (both bandwidth-bound), magnitude unmeasured |
+
+**Why "unmeasured" and not an extrapolation.** The obvious move is to scale
+throughput by the bandwidth ratio (576 → 1008 GB/s ⇒ ~1.75x), since the row above
+establishes the inner loop *is* bandwidth-bound. **Do not.** That same float64 row
+is a monument to exactly this reasoning failing: the spec ratio predicted 64x and
+the measurement said 4x — **wrong by 16x**. A spec-sheet guess is what this table
+exists to replace, and one guess per table is one too many. The number is cheap to
+get — one already-billed desktop 4090, `examples/demo_gpu_scaling.py` at 1 M cells
+— and it is requested from the `run-farm` session, who are renting anyway.
+
+Everything below follows from those numbers. A campaign estimator should be
 a function of them, run *before* launch — `(P, G, N, replicates, arms) → GPU-h, $`
-— not a scratch calculation after the bill.
+— not a scratch calculation after the bill. **It should take the hardware as an
+argument**, not bake in the box it was written on; that is the whole content of the
+provenance warning above.
 
 ### The levers, in order of leverage
 1. **Keep float64 out of the inner loop.** The sensitivity engine needs it (§1's
@@ -534,6 +596,26 @@ scale the run unit is **one individual's development**, the population is outer,
 and the fleet is the parallelism. The campaign axes `(arm, replicate_seed, …)`
 are the same in both regimes; only the granularity moves. Design the run config
 so both fit — see the `run-farm` thread.
+
+> **⚠ "A run is one individual's development" is a claim about the *science*, not
+> about *dispatch*, and reading it as dispatch buys the expensive design.** One
+> development is the indivisible unit of work (it cannot be split across devices,
+> and §5b lever 3 says a preempted one is cheaper to redo than persist). It is
+> **not** the unit of rental. The `run-farm` session measured the reason
+> (2026-07-16, 13 live rentals): **the failure tax is fixed per host *acquired*
+> — ~$0.02–0.05 to get one host that boots — independent of how long the work then
+> runs**, because ~58% of created instances never reach `running`. At 19 s per
+> development, renting per run pays ~100x the tax over the work; amortised over a
+> long leg it is noise.
+>
+> **So the run unit and the dispatch unit must be allowed to differ**: a leg
+> batches many individuals onto one acquired host. The multi-GPU case compounds it
+> — the tax is per *rental*, not per GPU, so an 8x box is ~8x cheaper per GPU, and
+> at **~10 organisms per 24 GB card** that is **~80 organisms in flight per single
+> acquisition**. One boot-lottery ticket, eighty organisms.
+>
+> The sentence above is the hazard, not the model: it reads naturally and leads
+> straight to renting per 19-second run.
 
 ## 5c. Standing requirement — a testbed for viral-punctuated evolution
 
