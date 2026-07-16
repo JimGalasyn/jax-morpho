@@ -74,7 +74,10 @@ def main():
         print(f"            floor:  " + "".join(f"{r['noise_angle']:>8.1f}°" for r in rs))
         print(f"            angle_P:" + "".join(f"{r['angle_P']:>8.1f}°" for r in rs)
               + f"   monotone={mono}")
-        print(f"            snr:    " + "".join(f"{r['snr']:>9.1f}" for r in rs) + "\n")
+        print(f"            snr:    " + "".join(f"{r['snr']:>9.1f}" for r in rs))
+        # read the library's own verdict rather than re-deriving the threshold
+        print(f"            valid?  " + "".join(
+            f"{'  yes' if r['resolved'] else ' NOISE':>9}" for r in rs) + "\n")
 
     print("   READ THIS AS: at p >= 0.25, where snr is comfortable, G's error sits")
     print("   AT the noise floor -> consistent with EXACT, while P is 20-114deg off")

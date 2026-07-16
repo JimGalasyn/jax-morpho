@@ -48,7 +48,7 @@ from jax_morpho.evodevo import quantgen as QG
 from jax_morpho.evodevo import response as RS
 
 N_GENES, N_ENV = 4, 2
-SNR_FLOOR = 3.0
+SNR_FLOOR = RS.SNR_FLOOR      # single source of truth: the library, not a copy
 
 
 @pytest.fixture(scope="module")
@@ -93,6 +93,25 @@ class TestGate3:
             assert r["snr"] > SNR_FLOOR, (
                 f"p={r['p']}: response below the noise floor (snr={r['snr']:.1f}); "
                 "the angles are meaningless — raise n_ind/n_replays")
+            assert r["resolved"] is True
+
+    def test_the_result_carries_its_own_validity(self, sweep):
+        """``resolved`` must travel *with* the angles, not be left for the caller
+        to recompute.
+
+        Handing back `angle_G` next to an `snr` the caller has to know to check
+        is the same failure this module is about: a number without its validity
+        reads as authoritative. Tests the *invariant* rather than hunting for a
+        noisy parameter set — which snr value a given config lands on is exactly
+        the thing that varies.
+        """
+        for r in sweep:
+            assert "resolved" in r, "the result does not carry its own validity"
+            assert r["resolved"] == (r["snr"] > RS.SNR_FLOOR)
+            # angles are always present — they are the right thing to *look* at
+            # even when they are not evidence; `resolved` is what says which.
+            assert np.isfinite(r["angle_G"]) and np.isfinite(r["angle_P"])
+            assert np.isfinite(r["noise_angle"])
 
     def test_G_predicts_the_response_to_within_the_noise_floor(self, sweep):
         """The gate — stated against the measurement's own resolution rather

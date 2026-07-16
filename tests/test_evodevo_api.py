@@ -34,15 +34,33 @@ def test_submodules_are_not_shadowed_by_functions():
 
 
 def test_colliding_names_resolve_to_the_intended_function():
-    """The three renames earn their keep here."""
-    # reference_mu owns the bare names (published v0.2.0 API)
-    assert E.develop is reference_mu.develop
-    assert E.develop_population is reference_mu.develop_population
-    # ...and the mechanical/pipeline versions are reachable under distinct ones
+    """Every collision resolves to a *qualified* name — none to a bare one."""
+    assert E.develop_mu is reference_mu.develop
+    assert E.develop_population_mu is reference_mu.develop_population
     assert E.develop_mechanical is mechanical.develop
     assert E.develop_genome is pipeline.develop
     assert E.develop_genome_population is pipeline.develop_population
     assert E.phenotype_of is pipeline.phenotype
+
+
+def test_ambiguous_bare_names_are_not_exported():
+    """The trap this replaces, pinned.
+
+    ``develop`` and ``develop_population`` were bound to the Milocco-Uller
+    *toggle switch ODE* — correct when evodevo was only the Phase-0 calibration,
+    a trap once the package is headlined by the mechanical engine. Anyone
+    reaching for ``evodevo.develop_population`` means "develop a population of
+    organisms" and would have silently got the ODE toy.
+
+    Breaking v0.2.0 here is the point: an AttributeError naming the missing
+    symbol is a loud, immediate, one-line fix. A silent wrong answer is not.
+    """
+    for bare in ("develop", "develop_population"):
+        assert not hasattr(E, bare), (
+            f"evodevo.{bare} is bound again — whichever module it resolves to, "
+            "the name is ambiguous between the M-U ODE and the mechanical "
+            "engine, and being wrong is silent. Use a qualified name.")
+        assert bare not in E.__all__
 
 
 def test_no_exported_name_is_bound_twice_to_different_objects():

@@ -51,6 +51,13 @@ from jax_morpho.evodevo import pipeline as PL
 from jax_morpho.evodevo import quantgen as QG
 
 
+#: Below this signal-to-noise the realised response is under the noise floor and
+#: `angle_G` / `angle_P` are measuring noise, not development. Every result dict
+#: carries ``resolved = snr > SNR_FLOOR``; **read it before reading the angles.**
+#: Single source of truth — the tests and the demo import it from here.
+SNR_FLOOR = 3.0
+
+
 def _inputs(a, u):
     """Assemble the developmental map's input: heritable genome + environment."""
     return np.concatenate([np.asarray(a), np.asarray(u)], axis=-1)
@@ -82,6 +89,15 @@ def simulate_response(p, org, arch, *, n_env=2, sigma_env=0.02, n_ind=600,
     Returns a dict with `G` (sensitivity-derived), `P`, the selection
     differential `s`, the two predictions, the realised response, and the angles
     between them.
+
+    .. warning::
+       **Check ``resolved`` before reading ``angle_G`` / ``angle_P``.** At low
+       allele frequency the realised response falls under the noise floor and the
+       angles measure noise, not development — they are still returned (they are
+       the right thing to *look* at) but they are not evidence of anything. The
+       dict carries ``snr``, ``noise_angle = arcsin(1/snr)`` (the best alignment
+       *any* prediction could demonstrate at that snr), and
+       ``resolved = snr > SNR_FLOOR``.
 
     The anisotropy is the point
     ---------------------------
@@ -177,10 +193,18 @@ def simulate_response(p, org, arch, *, n_env=2, sigma_env=0.02, n_ind=600,
     # at the noise floor means "consistent with exact", not "1.8° wrong".
     noise_angle = float(np.degrees(np.arcsin(min(1.0 / max(snr, 1e-300), 1.0))))
 
+    # `resolved` travels WITH the angles, because computing snr and then handing
+    # back angle_G/angle_P unqualified is the same failure this whole module is
+    # about: a number without its validity reads as authoritative. A caller who
+    # ignores it gets a noise-dominated angle that looks like a result. Not
+    # NaN-ing the angles is deliberate — they are still the right diagnostic to
+    # *look* at (the demo prints them next to the floor); they are just not
+    # evidence of anything when `resolved` is False.
     return dict(p=p, G=G, P=P, s=s, beta=beta,
                 dz_lande=dz_lande, dz_naive=dz_naive, dz_obs=dz_obs,
                 angle_G=QG.angle_deg(dz_obs, dz_lande),
                 angle_P=QG.angle_deg(dz_obs, dz_naive),
+                resolved=bool(snr > SNR_FLOOR),
                 snr=snr, noise_angle=noise_angle, n_offspring=n_off_total,
                 heritability=float(np.trace(G) / np.trace(P)),
                 rank_P=int(np.linalg.matrix_rank(P, tol=1e-12)),

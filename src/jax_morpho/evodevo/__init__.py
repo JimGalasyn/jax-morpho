@@ -101,13 +101,25 @@ from jax_morpho.evodevo.quantgen import (
 )
 from jax_morpho.evodevo.reference_mu import (
     build_G_sensitivity,
-    develop,
-    develop_population,
     develop_theta,
     run_fig3c,
     simulate_fig3c,
     toggle_deriv,
 )
+# BREAKING vs v0.2.0, deliberately: the bare names ``develop`` and
+# ``develop_population`` are gone. They resolved to the Milocco-Uller *toggle
+# switch ODE* — correct when evodevo was only the Phase-0 calibration, and a trap
+# now that the package is headlined by the mechanical engine. Someone reaching
+# for ``evodevo.develop_population`` today means "develop a population of
+# organisms" and would have silently received the ODE toy.
+#
+# They now carry a ``_mu`` suffix and the mechanical/pipeline versions carry
+# their own. Nothing is bound to the bare names, so v0.2.0 code fails with an
+# immediate AttributeError naming the missing symbol — a loud break, which is the
+# whole point. Preserving the name would have kept a silent wrong answer for API
+# tidiness. Pinned by tests/test_evodevo_api.py.
+from jax_morpho.evodevo.reference_mu import develop as develop_mu
+from jax_morpho.evodevo.reference_mu import develop_population as develop_population_mu
 from jax_morpho.evodevo.sensitivity import (
     forward_sensitivity,
     implicit_sensitivity,
@@ -115,8 +127,9 @@ from jax_morpho.evodevo.sensitivity import (
 )
 
 __all__ = [
-    # reference model (Milocco-Uller toggle switch)
-    "develop", "develop_theta", "develop_population", "toggle_deriv",
+    # reference model (Milocco-Uller toggle switch) — *_mu, never bare: see the
+    # import block above on why `develop` / `develop_population` were removed.
+    "develop_mu", "develop_theta", "develop_population_mu", "toggle_deriv",
     "simulate_fig3c", "run_fig3c", "build_G_sensitivity",
     # sensitivity engine
     "forward_sensitivity", "reverse_sensitivity", "implicit_sensitivity",
