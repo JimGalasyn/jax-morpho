@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from functools import partial
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 
@@ -150,7 +151,7 @@ def force_residual(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT):
 
 @partial(jax.jit, static_argnames=("a", "r_max", "max_descent", "max_newton"))
 def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
-                tol=1e-12, max_descent=5000, max_newton=100, newton_tol=1e-2,
+                tol=1e-12, max_descent=5000, max_newton=100, newton_tol=1e-4,
                 lr0=0.01, rcond=1e-8):
     """Relax to a *genuine* mechanical equilibrium, to machine precision.
 
@@ -164,12 +165,16 @@ def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
        ``newton_tol``). Every accepted step strictly decreases the energy, so —
        unlike a clipped fixed step — no oscillation can be a fixed point of the
        iteration.
-    2. **Projected Newton** to polish. Near the minimum, ``x ← x − H⁺∇E``
+    2. **Damped projected Newton** to polish. Near the minimum, ``x ← x − H⁺∇E``
        converges quadratically and reaches ~1e-14 in a handful of steps. The
        pseudo-inverse is what makes this legal: H is exactly singular here (the
        rigid modes, plus a trivial mode per padded cell), and ``pinv`` takes the
        step in the complement — the same gauge choice the sensitivity engine
-       makes, for the same reason.
+       makes, for the same reason. The step is damped because ``newton_tol`` is
+       a guess about where the quadratic basin starts, and a guess should
+       degrade rather than fail: handing over at 1e-2 on a heterogeneous θ field
+       gives a step too large to help, and an undamped Newton then *freezes* at
+       the handoff residual instead of converging slowly.
 
     Why the handoff exists at all
     -----------------------------
@@ -232,28 +237,98 @@ def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
     p, _, it_gd, res = jax.lax.while_loop(
         gd_cond, gd_body, (pos, lr0, 0, resid(pos)))
 
-    # -- stage 2: projected Newton polish ---------------------------------
+    # -- stage 2: damped projected Newton polish --------------------------
     hess_fn = jax.hessian(lambda q: energy(q.reshape(pos.shape)))
 
     def nt_cond(state):
-        _, it, res = state
-        return (res > tol) & (it < max_newton)
+        _, it, res, moving = state
+        return (res > tol) & (it < max_newton) & moving
 
     def nt_body(state):
-        q, it, res = state
+        q, it, res, _ = state
         g = grad_fn(q).ravel()
         H = hess_fn(q.ravel())
-        delta = jnp.linalg.pinv(H, rcond=rcond) @ g
-        q_new = q - delta.reshape(pos.shape) * amask
-        # Keep the step only if it improves the residual; otherwise stop moving
-        # (the loop then exits on max_newton rather than wandering).
+        d = (jnp.linalg.pinv(H, rcond=rcond) @ g).reshape(pos.shape) * amask
+
+        # Damping. An undamped Newton step is only trustworthy inside the
+        # quadratic basin, and "inside" is not something we can assert from
+        # here — so halve the step until the residual actually improves. Tested
+        # on the residual, never on energy differences (see above). Without
+        # this, a step taken too far out simply fails to improve and the solve
+        # freezes at whatever ``newton_tol`` handed over — a silent stall
+        # rather than a slower solve.
+        def bt_cond(s):
+            t, i = s
+            return (resid(q - t * d) >= res) & (i < 30)
+
+        def bt_body(s):
+            t, i = s
+            return t * 0.5, i + 1
+
+        t, _ = jax.lax.while_loop(bt_cond, bt_body, (1.0, 0))
+        q_new = q - t * d
         res_new = resid(q_new)
         take = res_new < res
+        # If even a 2^-30 step cannot improve the residual we are genuinely
+        # stuck; stop rather than burn the remaining iterations, and let the
+        # caller see converged=False.
         return (jnp.where(take, q_new, q), it + 1,
-                jnp.where(take, res_new, res))
+                jnp.where(take, res_new, res), take)
 
-    x, it_nt, res = jax.lax.while_loop(nt_cond, nt_body, (p, 0, res))
+    x, it_nt, res, _ = jax.lax.while_loop(nt_cond, nt_body, (p, 0, res, True))
     return x, res, it_gd + it_nt, res <= tol
+
+
+#: Contact cutoff separating first neighbours (~r_eq = 1.0) from second
+#: neighbours (~√3 r_eq = 1.73) in a hexagonal packing. Any value in the gap
+#: works; see :func:`contact_topology` for why the gap is what matters.
+CONTACT_CUTOFF = 1.3
+
+
+def contact_topology(pos, alive=None, cutoff=CONTACT_CUTOFF):
+    """Which cells touch which — a fingerprint of the developmental *basin*.
+
+    Returns the set of contacting pairs (centres closer than ``cutoff``) as a
+    frozenset of sorted index pairs. Two equilibria with the same contact set are
+    the same packing, deformed; a changed contact set means a neighbour exchange
+    — a different developmental outcome.
+
+    Why this exists. The Morse energy landscape is **multistable**, so the
+    genotype→phenotype map is only piecewise smooth: a large enough genetic
+    perturbation pushes the tissue over a barrier into a different packing, and
+    the phenotype jumps *discontinuously*. Any local object — the developmental
+    Jacobian, and so G — describes the response **within a basin** and is silent
+    about crossings between them.
+
+    Why contacts and not a Delaunay triangulation
+    ---------------------------------------------
+    The obvious fingerprint is the Delaunay edge set, and on this system it is
+    **wrong**. A hexagonal lattice is the maximally *cocircular* configuration —
+    it is dense with quadruples of points on a common circle — so its Delaunay
+    triangulation is degenerate and flips diagonals under infinitesimal
+    perturbation, with no rearrangement of anything physical. Measured on a
+    19-cell blob at σ=0.05 against an unambiguous ground truth (equilibria that
+    moved by ~20x the typical distance): Delaunay flagged 23/120 individuals of
+    which **21 were false positives**. Contacts at ``cutoff=1.3`` flagged 8, all
+    real jumps included. (``center_based.interior_side_counts`` uses Delaunay
+    legitimately — it measures *disordered* packings, where cocircularity is
+    measure-zero rather than the norm.)
+
+    The cutoff is not tuned to an answer; it just has to fall in the gap between
+    first and second neighbours. Pairs sitting near it can flip without a real
+    rearrangement, so this over-reports slightly — treat a changed contact set as
+    "worth a look", and a large jump in the form itself as proof.
+
+    Host-side, so not jittable or vmappable — a diagnostic, not part of the
+    differentiable path.
+    """
+    P = np.asarray(pos)
+    if alive is not None:
+        P = P[np.asarray(alive) > 0.5]
+    d = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=-1)
+    i, j = np.triu_indices(len(P), 1)
+    return frozenset((int(a), int(b)) for a, b in zip(i[d[i, j] < cutoff],
+                                                      j[d[i, j] < cutoff]))
 
 
 def develop(theta, pos0, alive, a=A_DEFAULT, r_max=R_MAX_DEFAULT, tol=1e-12):

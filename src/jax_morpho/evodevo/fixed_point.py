@@ -37,9 +37,12 @@ gives two different answers:
   net rotation, because the modes rotate with the shape as it changes — a
   geometric phase, the same anholonomy that lets a falling cat land on its feet
   with zero angular momentum throughout. Finite-differencing the relaxation
-  therefore reports a large rotational component (~5.2 against a Jacobian of
-  scale ~1) that no fixed-point method can reproduce, because it is not a
-  property of the fixed point at all.
+  therefore reports a large rotational component (~0.45 against a Jacobian of
+  scale ~1.3) that no fixed-point method can reproduce, because it is not a
+  property of the fixed point at all. Its *size* depends on the path: changing
+  the solver's step schedule moved it from ~5.2 to ~0.45 while leaving the
+  gauge-invariant sensitivity untouched, which is the clearest statement of what
+  it is.
 
 So the equilibrium **form** is a function of θ, while its **orientation** is a
 functional of the entire developmental trajectory. This is why the phenotype

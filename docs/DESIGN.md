@@ -84,6 +84,9 @@ The two load-bearing interfaces are **θ** (developmental parameters) and **z**
 (phenotype). Get those clean and every layer is swappable.
 
 ### Extension points (locked decisions in **bold**)
+Status: A ✅ (`genome_map`), B ✅ (`mechanical`), C ✅ (`phenotype`),
+D partial (`quantgen` — G only; β and Δz̄ are Phase 3), E not started.
+
 - **A — genome→θ map.** **Full GRN/MLP** (nonlinear, multi-parameter), *not*
   affine. **Genome = the network's inputs (the evolving genes); the network is
   the fixed, conserved developmental map** (matches M-U's `f`). Start
@@ -170,7 +173,7 @@ its C⁰ truncation; here a quintic switch makes the potential C², which the
 Hessian requires).
 
 ### Gate #1 — implicit-diff ⟺ finite differences
-**Relative difference `4.58e-09`** on the gauge-invariant subspace, 19-cell
+**Relative difference `8.44e-10`** on the gauge-invariant subspace, 19-cell
 tissue, non-uniform θ (38 parameters). Reproduce with
 `python examples/demo_phase1_gate.py`. Three findings were load-bearing:
 
@@ -187,7 +190,7 @@ tissue, non-uniform θ (38 parameters). Reproduce with
   rotation), spectrum `[0, 0, 0, 6.36, 9.56, ...]` against `λ_max ~ 263`. Not
   ill-conditioning: a degeneracy, forced by rigid-invariance of the energy.
   `jnp.linalg.solve` is the wrong call; the pseudo-inverse (equivalently,
-  projected CG — the two agree to `1.3e-11`, and CG never forms the Hessian) is
+  projected CG — the two agree to `5.7e-11`, and CG never forms the Hessian) is
   the right one.
 - **A Gaussian cloud is not a tissue.** Scattered at the scale of `r_max` it
   relaxes into disconnected fragments; each carries its own zero modes, their
@@ -198,10 +201,10 @@ tissue, non-uniform θ (38 parameters). Reproduce with
 
 ### The gauge is anholonomic (why Procrustes is load-bearing)
 Gate #1 passes on the *gauge-invariant* subspace, and the discarded part is not
-a rounding detail — it is **entirely rotation**, and it is large (~5.2 against a
-Jacobian of scale ~1). Decomposed: translation components `1.7e-07`/`7.6e-08`
-(= FD noise; the centre of mass is conserved along the path to `3.8e-15`),
-rotation `5.17`.
+a rounding detail — it is **entirely rotation**, and it is large (`0.446` against
+a Jacobian of scale ~1.3). Decomposed: translation components `5.7e-08`/`3.7e-07`
+(= FD noise; the centre of mass is conserved along the path to `4.6e-14`),
+rotation `0.446`.
 
 Each gradient step carries zero net torque, yet net rotation *accumulates*,
 because the modes rotate with the shape as it deforms — a geometric phase, the
@@ -209,24 +212,112 @@ falling-cat effect. **The equilibrium form is a function of θ; its orientation 
 a functional of the whole developmental trajectory.** No fixed-point method can
 reproduce it, and none should.
 
+> The claim then confirmed itself by accident. Phase 2 damped the Newton stage
+> and moved the Armijo→Newton handoff, changing the *path* to the same
+> equilibrium — and the rotational component fell from `5.17` to `0.446` while
+> the gauge-invariant gate was unaffected (it improved, `4.6e-09` → `8.4e-10`).
+> A quantity that changes when only the path changes is a property of the path.
+> The magnitude of the anholonomy is therefore not a stable number to quote; its
+> *presence*, and its confinement to the rotational mode, are the findings.
+
 This promotes §2C's Procrustes decision from convenience to necessity: alignment
 is not tidying-up before comparing shapes, it is what makes the phenotype a
 well-defined function of the genotype at all. Absent it, "phenotype" carries a
 path-dependent geometric-phase term. Pinned by `TestGaugeIsRotationOnly`.
 
-Next: Phase 2 — GRN genome map + landmark/Procrustes phenotype + gate #2.
+## 3c. Phase 2 — GRN genome map, Procrustes phenotype, gate #2 ✅
+
+Wires the rest of the spine: `genome_map.py` (layer A), `phenotype.py` (layer C),
+`pipeline.py` (the composed chain), `quantgen.py` (layer D's opening move).
+25 tests. Reproduce with `python examples/demo_phase2_gate.py`.
+
+    a ──[A: GRN/MLP]──▶ θ ──[B: relax]──▶ x* ──[C: landmarks+Procrustes]──▶ z
+    ∂z/∂a = (∂z/∂x*) · (∂x*/∂θ) · (∂θ/∂a)
+             autodiff    implicit     autodiff
+
+Only the middle factor needs the IFT; the outer two are explicit functions.
+
+### The Phase-1 payoff: the composed chain is gauge-invariant
+**`∂z/∂a` matches finite differences to `4.84e-09` — RAW, with no gauge
+projection.** Phase 1's raw `∂x*/∂θ` vs FD failed at ~0.7 relative because of
+the anholonomic rotation; gate #1 had to be stated on the gauge-invariant
+subspace. Composing the Procrustes readout removes that contamination entirely:
+`|∂z/∂x* · Z| = 1.4e-17` — the readout annihilates the rigid modes, so whatever
+gauge the implicit solve chose cannot reach the phenotype. This is the
+measurement that turns §2C's Procrustes decision from a convenience into a
+structural requirement.
+
+### Gate #2 — `G = J M Jᵀ` ⟺ empirical `Cov(z)`
+19-cell tissue, 4 genes, n=400, common random numbers (same ξ at every σ, and G
+built from the *empirical* covariance of the drawn genomes — so sampling noise
+cancels to leading order and what remains is the map's nonlinearity):
+
+| σ | rel. diff |
+|---|---|
+| 1e-2 | 1.05e-02 |
+| 5e-3 | 4.80e-03 |
+| 2.5e-3 | 3.15e-03 |
+| **1.25e-3** | **1.85e-03** |
+
+The discrepancy is controlled by σ, as a local claim must be. **The fitted
+convergence *order* is deliberately not gated**: two error terms compete here —
+an O(σ²) truncation (the naive O(σ) cancels because Gaussian genetic variation
+has zero third moment) and an O(σ) finite-sample term — so the fit swings between
+0.81 (n=400) and 2.03 (n=800). The magnitudes are robust; the order is not, and
+reporting the flattering fit would be cherry-picking. Not a numerical artefact:
+tightening the equilibrium tolerance from 1e-10 to 1e-13 changes the result in
+no digit.
+
+`rank(G) = 4 = n_genes`: development cannot express more independent directions
+of variation than the genome supplies.
+
+### Development is multistable — G is a *within-basin* object
+At σ=0.05 the form displacement `|x* − x*(a0)|` is **bimodal**: ~0.02 for most
+individuals, ~0.43 for a couple (2/120). Those are neighbour exchanges — the
+tissue rearranges into a different packing, so **the phenotype is discontinuous
+in the genome** and no local Jacobian can describe the crossing. G describes the
+response *within* a basin and is silent about jumps between them. None occur at
+σ ≤ 1.25e-3, which is why gate #2 is entitled to be a purely local claim there.
+
+This is not an embarrassment for the framework: Milocco & Uller's own reference
+model is a *bistable toggle switch*. Their development is multistable by
+construction; ours turns out to be multistable by consequence.
+
+Ruled out as explanations: Procrustes symmetry-branch flipping on the
+near-C6-symmetric blob (alignment angles stay < 0.14° across the population) and
+solver noise (tolerance-independent).
+
+### Two instruments corrected along the way
+- **Delaunay is the wrong basin fingerprint here.** A hex lattice is *maximally
+  cocircular*, so its triangulation flips diagonals under infinitesimal
+  perturbation with nothing physical changing: measured 23/120 flagged, **21
+  false positives**. `mechanical.contact_topology` uses contacts instead.
+  (`center_based.interior_side_counts` keeps Delaunay legitimately — it measures
+  *disordered* packings, where cocircularity is measure-zero rather than the norm.)
+- **Shape space is degenerate by 4, but not uniformly.** Three dimensions go
+  *exactly* (centring ×2 and Procrustes optimality `Σ zᵢ × refᵢ = 0` are linear
+  in z → singular values at machine zero); the fourth goes only
+  *asymptotically*, because unit scale is nonlinear — at finite spread ε the
+  cloud pokes out of the tangent plane by O(ε²), leaving a singular value of
+  relative size O(ε). So the finite-ε linear rank is 2k−3, and 2k−4 is the ε→0
+  tangent dimension where G lives.
+
+Next: Phase 3 — the quant-gen layer proper (β, `Δz̄ = Gβ`, the reverse-mode `Jᵀβ`
+path) + gate #3: reproduce the Fig-3C *pattern* with our development.
 
 ## 4. Validation ladder (each rung a known-answer gate)
-1. implicit-diff sensitivity ⟺ finite-difference Jacobian. ✅ `4.58e-09` (§3b)
+1. implicit-diff sensitivity ⟺ finite-difference Jacobian. ✅ `8.44e-10` (§3b)
 2. `G = J M Jᵀ` ⟺ empirical `Cov(phi(a))` in the small-perturbation regime.
+   ✅ `1.85e-03` at σ=1.25e-3, shrinking with σ (§3c)
 3. reproduce M-U Fig 3C / Fig 1C on their model (Phase 0). ✅
 4. multi-generation loop matches quantitative-genetic expectations.
 No layer ships without its number.
 
 ## 5. Sequencing
 0. **Phase 0 calibration** (0a ✅ → 0b ✅ → 0c ✅).
-1. implicit-diff sensitivity engine + gate #1. ✅ (§3b — rel. diff `4.58e-09`)
+1. implicit-diff sensitivity engine + gate #1. ✅ (§3b — rel. diff `8.44e-10`)
 2. GRN genome map + landmark/Procrustes phenotype (non-degenerate) + gate #2.
+   ✅ (§3c — gate #2 `1.85e-03`; chain vs FD raw `4.84e-09`)
 3. quant-gen layer on the mechanical engine; reproduce the Fig-3C *pattern* with
    our development + gate #3.
 4. evolutionary loop (the closed loop / game substrate) + gate #4.

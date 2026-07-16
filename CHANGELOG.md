@@ -4,13 +4,66 @@ All notable changes to this project are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features).
 
-## [Unreleased] — Phase 1: the sensitivity engine on the mechanical engine
+## [Unreleased] — Phases 1 & 2: our development, end to end
 
 Phase 0 calibrated the sensitivity machinery against Milocco & Uller's ODE.
 Phase 1 swaps in **our** development — a tissue relaxed to mechanical
-equilibrium — and gates it against finite differences.
+equilibrium — and gates it against finite differences. Phase 2 wires the rest of
+the spine (genome → θ → x* → landmarks → shape) and gates the G-matrix against a
+developed population.
 
-### Added — `jax_morpho.evodevo`
+### Added — Phase 2: the composed genotype→phenotype map
+- **`genome_map`** (layer A) — a nonlinear GRN/MLP from genome to per-cell θ
+  field, via positional information (`θ_i = MLP([a, u_i])`): the same conserved
+  network read against each cell's position. The genome is the network's *input*;
+  the network is the fixed developmental map. Deliberately not affine — an affine
+  map would assume away the question a development-derived G exists to answer.
+  Outputs are sigmoid-bounded so no genome can tear the tissue into fragments
+  (where `∂x*/∂θ` would not exist).
+- **`phenotype`** (layer C) — landmarks (homologous by cell index) + a
+  differentiable Procrustes shape, using the 2D closed form (`atan2`) rather than
+  an SVD, whose gradient is singular when singular values coincide — not a
+  hypothetical for a near-round tissue.
+- **`pipeline`** — the composed chain and its Jacobian
+  `∂z/∂a = (∂z/∂x*)(∂x*/∂θ)(∂θ/∂a)`, plus `develop_population` /
+  `phenotype_population`: the `vmap`'d GPU path.
+- **`quantgen`** — `G = J M Jᵀ` (Milocco & Uller Eq. 12 in matrix form).
+- **Gate #2**: `G = J M Jᵀ` vs the empirical covariance of a developed
+  population = **`1.85e-03`** at σ=1.25e-3, shrinking with σ. 25 tests;
+  `examples/demo_phase2_gate.py`.
+
+### Phase 1's payoff, measured
+The composed `∂z/∂a` matches finite differences to **`4.84e-09` raw — with no
+gauge projection**, where Phase 1's raw `∂x*/∂θ` failed at ~0.7 because of the
+developmental anholonomy. The Procrustes readout annihilates the rigid modes
+(`|∂z/∂x* · Z| = 1.4e-17`), so the gauge cannot reach the phenotype. This is what
+promotes the Procrustes readout from a convenience to a structural requirement.
+
+### Notes — Phase 2
+- **Development is multistable; G is a within-basin object.** At σ=0.05 the form
+  displacement is bimodal (~0.02 vs ~0.43): the tissue rearranges its neighbours
+  and the phenotype is **discontinuous in the genome**, so no local Jacobian can
+  describe the crossing. None occur at σ ≤ 1.25e-3, which is what entitles gate
+  #2 to be a local claim. Fittingly, Milocco & Uller's reference model is itself
+  a bistable toggle switch — their development is multistable by construction,
+  ours by consequence.
+- **The convergence order of gate #2 is deliberately not gated.** Two error terms
+  compete (an O(σ²) truncation — the naive O(σ) cancels because Gaussian genetic
+  variation has zero third moment — and an O(σ) finite-sample term), so the
+  fitted order swings between 0.81 and 2.03 with sample size. The magnitudes are
+  robust; the order is not.
+- **Delaunay is the wrong basin fingerprint on a lattice.** A hex packing is
+  maximally cocircular, so its triangulation flips diagonals under infinitesimal
+  perturbation with nothing physical changing: 23/120 flagged, **21 false
+  positives**. `mechanical.contact_topology` uses contacts instead.
+  (`center_based.interior_side_counts` keeps Delaunay legitimately — it measures
+  disordered packings, where cocircularity is measure-zero.)
+- **Shape space is degenerate by 4, but not uniformly**: three dimensions go
+  exactly (linear constraints → machine zero), the fourth only asymptotically
+  (unit scale is nonlinear → a singular value of relative size O(ε)). So finite-ε
+  linear rank is 2k−3; 2k−4 is the tangent dimension where G lives.
+
+### Added — Phase 1: `jax_morpho.evodevo`
 - **`mechanical`** — development as relaxation of a tissue to mechanical
   equilibrium, with **θ a per-cell field** (adhesion `D[i]`, preferred spacing
   `r_eq[i]`) rather than a couple of global scalars. Differential adhesion is the
@@ -23,7 +76,11 @@ equilibrium — and gates it against finite differences.
   matrix-free projected CG (Hessian-vector products only) paths, plus
   `rigid_modes` and a finite-difference reference.
 - **Gate #1** (validation-ladder rung 1): implicit-diff ⟺ finite differences to
-  **`4.58e-09`**. 16 tests; `examples/demo_phase1_gate.py`.
+  **`8.44e-10`**. 16 tests; `examples/demo_phase1_gate.py`.
+- `equilibrate`'s Newton stage is **damped** — an undamped step is only
+  trustworthy inside the quadratic basin, and handing over too early made the
+  solve *freeze* at the handoff residual instead of converging slowly. A guess
+  about where the basin starts should degrade, not fail.
 
 ### Fixed / corrected
 - **`center_based.relax` does not converge**, and v0.2.0's explanation of why
@@ -44,7 +101,7 @@ equilibrium — and gates it against finite differences.
   ill-conditioning. `linalg.solve` is the wrong tool; the pseudo-inverse is the
   right one.
 - **The developmental gauge is anholonomic.** Relaxation conserves the centre of
-  mass exactly (~1e-15), but *not* orientation: zero net torque at every step
+  mass exactly (~1e-14), but *not* orientation: zero net torque at every step
   still accumulates net rotation as the shape deforms — a geometric phase (the
   falling-cat effect). The equilibrium **form** is a function of θ; its
   **orientation** is a functional of the whole developmental path. This makes the
