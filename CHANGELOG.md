@@ -6,6 +6,26 @@ All notable changes to this project are documented here. Format based on
 
 ## [Unreleased] — Phases 1–3: our development, end to end, and the loop closed
 
+### Added — docs
+- **`docs/ENVIRONMENT.md`** — a proposal for the tiered environment & ecology
+  system: where the environment enters the `genotype → … → response` spine, which
+  parts of it may touch a gradient, and what must be true before any of it earns
+  a number. Its thesis is that **the environment is a fitness problem, not a
+  physics problem** here: selection is currently `truncation_select` toward a
+  *fixed optimum we supply*, which is exactly right for Phases 0–3 (a gate needs
+  an exogenous target) but means the loop cannot respond to a stressor — so
+  bolting fields onto development without moving the target would be plasticity
+  theatre. **Status: proposal, nothing built.** Companion to `DESIGN.md`, to be
+  argued with before it is written.
+
+  *Provenance, since it is otherwise invisible:* this landed in commit `3a3ec4a`,
+  whose message reads "demo_phase3_gate: show three seeds, not one lucky sweep"
+  and mentions only the demo — 534 of that commit's 563 lines are this document.
+  It was written by another session in the shared working tree and swept in by a
+  `git add -A` that did not look. Recorded rather than quietly relisted: a design
+  document with no discoverable origin is the same failure mode §5b exists to
+  name, one level up from the numbers.
+
 ### Added — Phase 3: the quant-gen layer and gate #3
 - **`genetics`** — diploid loci with additive allelic effects, Hardy–Weinberg
   sampling, Mendelian recombination, and **non-heritable environmental inputs**.
