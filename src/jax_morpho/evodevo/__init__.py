@@ -12,6 +12,11 @@ general fixed-point engine (``fixed_point``).
 Phase 2 wires the rest of the spine: a nonlinear GRN genome map (``genome_map``),
 a landmark + Procrustes shape readout (``phenotype``), the composed
 genome→shape pipeline (``pipeline``), and the delta-method G (``quantgen``).
+
+Phase 3 closes the loop: a genetic architecture of diploid loci (``genetics``),
+the one-generation response to selection (``response``), and the two-solve
+``Δz̄ = J M Jᵀβ`` path that needs no G and no J.
+
 See docs/DESIGN.md.
 """
 from __future__ import annotations

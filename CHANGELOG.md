@@ -4,7 +4,82 @@ All notable changes to this project are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features).
 
-## [Unreleased] — Phases 1 & 2: our development, end to end
+## [Unreleased] — Phases 1–3: our development, end to end, and the loop closed
+
+### Added — Phase 3: the quant-gen layer and gate #3
+- **`genetics`** — diploid loci with additive allelic effects, Hardy–Weinberg
+  sampling, Mendelian recombination, and **non-heritable environmental inputs**.
+  The last is load-bearing rather than decorative: with no environmental variance
+  `P = G` exactly and the Fig-3C comparison is vacuous.
+- **`response`** — the one-generation response protocol on our development, and
+  **gate #3**: does a development-derived G predict the response where P does not?
+
+  ```
+   p      angle_G     angle_P    snr    noise floor = arcsin(1/snr)
+  0.50   1.6-3.6°    20-29°    19-23      ~2.8°
+  0.25   1.9-5.3°   53-114°    11-14      ~4-5°
+  ```
+  **G's error sits at the measurement's own noise floor — consistent with
+  exact.** P's is an order of magnitude above it: a real systematic error. The
+  gate is stated against the noise floor rather than an arbitrary threshold,
+  because a response measured at signal-to-noise `snr` can be tilted
+  `arcsin(1/snr)` by noise alone and *nothing* can be shown to align better.
+- **`phenotype.tangent_basis`** — the Procrustes tangent space (2k−4 dims). This
+  is what makes `β = P⁻¹s` well posed: P is **singular in ambient shape
+  coordinates by construction**, not merely ill-conditioned. rank(P) goes
+  5-of-8 → 4-of-4.
+- **`fixed_point.implicit_vjp` / `implicit_jvp`** and
+  **`pipeline.lande_response_vjp`** — `Δz̄ = J M Jᵀβ` in **two solves**,
+  independent of gene *and* trait count, versus one solve per gene to form J.
+
+### Not claimed (Phase 3)
+- **The monotone degradation of P as p → 0 does not reproduce.** One seed shows a
+  textbook monotone sweep (`angle_P` 23°→148°); two others don't. It is not
+  stable at these sample sizes: the response shrinks ∝ 2pq while the noise floor
+  — set by the environment-dominated phenotypic sd — does not, so SNR dies and
+  the low-`p` angles are noise. M-U buy that tail with 5000 individuals × 50
+  replays ≈ 5e5 developments per point; we spend ~1e4. `demo_phase3_gate.py`
+  prints three seeds so the spread is the message.
+- **It cannot be bought by raising the genetic variance**: σ_γ 0.02 → 0.08 lifts
+  SNR but degrades `angle_G` 3.3° → 18.8°, because larger perturbations leave the
+  linear regime G is defined in. Gate #2's small-perturbation constraint and gate
+  #3's SNR pull against each other.
+
+### Notes — Phase 3
+- **The reverse-mode path needs the IFT, not autodiff.** `jax.vjp` through the
+  genome→phenotype map (1) does not run — `equilibrate` is a `lax.while_loop`,
+  unsupported by reverse-mode — and (2) would be wrong if it did, since unrolling
+  differentiates the relaxation *path* rather than the fixed point. A test pins
+  that the naive route still raises.
+- **Two protocol errors worth recording**, both "I let something adapt that the
+  reference holds fixed": sweeping every gene's MAF instead of holding some at
+  0.5 (the anisotropy *is* the mechanism), and recomputing the selective optimum
+  per population (selection then always pulls along whatever variance exists, so
+  `s` can never misalign). Both produced plausible-looking nulls.
+- **`evodevo`'s namespace had a silent collision**:
+  `reference_mu.develop_population` (the published v0.2.0 API) shadowed
+  `pipeline.develop_population` by last-import-wins, handing callers the
+  toggle-switch developer where they asked for the mechanical one. A "does every
+  `__all__` name exist?" check passed while returning the wrong object.
+  `tests/test_evodevo_api.py` now checks *identity* and scans for the next one.
+
+### Added — CG-Newton (the Phase 4 prerequisite)
+- `equilibrate` now defaults to **matrix-free CG-Newton**; `newton_solver="pinv"`
+  is kept as the reference it is gated against. The dense path's real cost was
+  **O(N³) memory**: the Hessian is 51 MB at N=1261, but `jax.hessian` through the
+  O(N²) pair energy builds a `(2N, N, N)` intermediate — **32 GB**. Measured:
+  `pinv` OOMs at N=1261 where `cg` runs; where both fit, CG is ~3.6× faster.
+  The two reach the **same organism** — differing only by a rigid motion, with
+  the Procrustes phenotype identical to 2.6e-16. **The phenotype is
+  solver-independent**, a third confirmation of the anholonomy.
+- **The next wall is not where it was predicted.** Not the energy's O(N²) pair
+  matrix but the *descent stage*: at N=1261 CG-Newton still fails (5000 descent
+  iterations exhausted), because gradient descent needs O(N) iterations to relax
+  a big blob's long-wavelength breathing mode. Nor can descent be dropped —
+  "always Newton, damped" stalls, because far from the minimum H is not
+  positive-definite and `H⁻¹∇E` is not a descent direction.
+
+### Added — Phases 1 & 2
 
 Phase 0 calibrated the sensitivity machinery against Milocco & Uller's ODE.
 Phase 1 swaps in **our** development — a tissue relaxed to mechanical
