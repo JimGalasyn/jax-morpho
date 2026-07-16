@@ -20,8 +20,24 @@ from jax_morpho.evodevo.fixed_point import (
     energy_sensitivity,
     finite_difference_sensitivity,
     fixed_point_sensitivity,
+    implicit_jvp,
+    implicit_vjp,
     project_out,
     rigid_modes,
+)
+from jax_morpho.evodevo.genetics import (
+    Architecture,
+    allele_frequencies,
+    genome_from_scores,
+    make_architecture,
+    recombine,
+    sample_environment,
+)
+from jax_morpho.evodevo.genetics import sample_genotypes as sample_genotypes_hwe
+from jax_morpho.evodevo.response import (
+    reference_optimum,
+    run_sweep,
+    simulate_response,
 )
 from jax_morpho.evodevo.genome_map import GRN, grn_field, grn_jacobian, init_grn
 from jax_morpho.evodevo.mechanical import (
@@ -44,25 +60,39 @@ from jax_morpho.evodevo.phenotype import (
     procrustes_shape,
     shape_dim,
     shape_jacobian,
+    tangent_basis,
+    tangent_coords,
 )
 from jax_morpho.evodevo.pipeline import (
     Organism,
-    develop_population,
+    lande_response_vjp,
     make_organism,
     phenotype_jacobian,
+    phenotype_jvp,
     phenotype_population,
+    phenotype_vjp,
     theta_of,
 )
-# Re-exported under *_of names: binding the bare names ``phenotype`` and
-# ``develop`` on the package would shadow the ``phenotype`` submodule and
-# ``mechanical.develop``, so ``from jax_morpho.evodevo import phenotype`` would
-# hand back a function instead of the module.
+# Renamed on the way out, to avoid three separate collisions on this package's
+# namespace (all pinned by tests/test_evodevo_api.py):
+#   * bare ``phenotype``/``develop`` would shadow the ``phenotype`` submodule and
+#     ``mechanical.develop``;
+#   * ``develop_population`` already belongs to ``reference_mu`` — the published
+#     v0.2.0 API — and being imported later it would silently *win*, handing
+#     callers the toggle-switch developer where they asked for the mechanical one.
 from jax_morpho.evodevo.pipeline import develop as develop_genome
+from jax_morpho.evodevo.pipeline import develop_population as develop_genome_population
 from jax_morpho.evodevo.pipeline import phenotype as phenotype_of
 from jax_morpho.evodevo.quantgen import (
+    angle_deg,
+    average_effects,
     build_G,
+    build_G_alleles,
     empirical_covariance,
+    lande_response,
     relative_difference,
+    selection_gradient,
+    truncation_select,
 )
 from jax_morpho.evodevo.reference_mu import (
     build_G_sensitivity,
@@ -97,9 +127,20 @@ __all__ = [
     # phenotype — layer C (Phase 2)
     "landmarks", "procrustes_align", "procrustes_shape", "make_reference",
     "shape_jacobian", "shape_dim", "centroid_size",
+    "tangent_basis", "tangent_coords",
     # composed pipeline (Phase 2)
     "Organism", "make_organism", "theta_of", "develop_genome", "phenotype_of",
-    "phenotype_jacobian", "develop_population", "phenotype_population",
-    # quantitative genetics — layer D (Phase 2)
+    "phenotype_jacobian", "develop_genome_population", "phenotype_population",
+    # the two-solve reverse-mode path (Phase 3)
+    "phenotype_vjp", "phenotype_jvp", "lande_response_vjp",
+    "implicit_vjp", "implicit_jvp",
+    # genetic architecture (Phase 3)
+    "Architecture", "make_architecture", "sample_genotypes_hwe",
+    "genome_from_scores", "sample_environment", "allele_frequencies", "recombine",
+    # quantitative genetics — layer D (Phases 2-3)
     "build_G", "empirical_covariance", "relative_difference",
+    "average_effects", "build_G_alleles", "selection_gradient",
+    "lande_response", "truncation_select", "angle_deg",
+    # the one-generation response protocol (Phase 3)
+    "simulate_response", "run_sweep", "reference_optimum",
 ]

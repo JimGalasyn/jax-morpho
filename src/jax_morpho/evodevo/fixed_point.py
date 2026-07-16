@@ -166,6 +166,92 @@ def fixed_point_sensitivity(F, x_star, theta, *, solver="pinv",
     raise ValueError(f"unknown solver {solver!r}; expected 'pinv' or 'cg'")
 
 
+def implicit_vjp(F, x_star, theta, v, *, null_basis=None, cg_tol=1e-10,
+                 cg_maxiter=400):
+    """``(∂x*/∂θ)ᵀ v`` — the transpose sensitivity, in **one linear solve**.
+
+    This is the path DESIGN.md §2D needs and the reason `Δz̄ = Jᵀβ`-style
+    quantities are affordable at scale. Forming ``∂x*/∂θ`` costs one solve *per
+    parameter*; this costs one solve **total**, whatever the parameter count.
+
+    Why it cannot be `jax.vjp` through the solver
+    ---------------------------------------------
+    Two independent reasons, and they are worth stating because the naive route
+    looks so available:
+
+    1. **It does not run.** `equilibrate` is a `lax.while_loop` (it iterates to a
+       tolerance, not a fixed count), and reverse-mode autodiff through
+       `while_loop` is not defined in JAX. Rewriting it as a `scan` would make it
+       run, which brings us to:
+    2. **It would be the wrong answer.** That is Phase 1's whole finding —
+       backprop through an unrolled relaxation differentiates the *path*, not the
+       fixed point, and silently returns garbage if the relaxation has not
+       genuinely converged (see §1 of docs/DESIGN.md, and the period-2 limit
+       cycle that started all this).
+
+    The implicit transpose has neither problem: it never touches the iteration.
+    From ``∂x*/∂θ = −A⁻¹B`` with ``A = ∂F/∂x`` and ``B = ∂F/∂θ``,
+
+        (∂x*/∂θ)ᵀ v = −Bᵀ A⁻ᵀ v
+
+    so: solve ``A w = v`` (one projected CG, exploiting ``A = Aᵀ`` for an energy),
+    then apply ``Bᵀ`` — a plain VJP through an *explicit* function, which
+    reverse-mode handles fine because there is no solve inside it.
+    """
+    shape = x_star.shape
+    Ffun = lambda xf, th: F(xf.reshape(shape), th).reshape(-1)
+    xf = x_star.reshape(-1)
+    vf = jnp.asarray(v).reshape(-1)
+
+    if null_basis is None:
+        raise ValueError("implicit_vjp requires null_basis (see rigid_modes)")
+    Z = null_basis
+
+    def Av(w):
+        return jax.jvp(lambda x: Ffun(x, theta), (xf,), (w,))[1]
+
+    # Same projected operator as fixed_point_sensitivity's CG path: (−A) is PSD
+    # at a minimum, and acting as the identity along the null space makes it
+    # invertible without touching the physical subspace.
+    def M(w):
+        return project_out(Z, -Av(project_out(Z, w))) + Z @ (Z.T @ w)
+
+    w, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, vf), tol=cg_tol,
+                                      atol=0.0, maxiter=cg_maxiter)
+    # solve gave (−A)⁻¹v, so −A⁻¹v = +w; then (∂x*/∂θ)ᵀ v = −Bᵀ(A⁻¹v) = Bᵀ w
+    _, vjp_theta = jax.vjp(lambda th: Ffun(xf, th), theta)
+    return vjp_theta(w)[0]
+
+
+def implicit_jvp(F, x_star, theta, dtheta, *, null_basis=None, cg_tol=1e-10,
+                 cg_maxiter=400):
+    """``(∂x*/∂θ) δθ`` — the forward twin of :func:`implicit_vjp`, one solve.
+
+    ``= −A⁻¹ B δθ``: push ``δθ`` through ``B = ∂F/∂θ`` (an explicit JVP), then one
+    projected CG. Together the two directions make ``J M Jᵀ β`` cost **two**
+    solves instead of one per parameter.
+    """
+    shape = x_star.shape
+    Ffun = lambda xf, th: F(xf.reshape(shape), th).reshape(-1)
+    xf = x_star.reshape(-1)
+
+    if null_basis is None:
+        raise ValueError("implicit_jvp requires null_basis (see rigid_modes)")
+    Z = null_basis
+
+    def Av(w):
+        return jax.jvp(lambda x: Ffun(x, theta), (xf,), (w,))[1]
+
+    def M(w):
+        return project_out(Z, -Av(project_out(Z, w))) + Z @ (Z.T @ w)
+
+    B_dtheta = jax.jvp(lambda th: Ffun(xf, th), (theta,), (dtheta,))[1]
+    # solve (−A) w = B δθ  ⇒  w = −A⁻¹ B δθ = (∂x*/∂θ) δθ
+    w, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, B_dtheta), tol=cg_tol,
+                                      atol=0.0, maxiter=cg_maxiter)
+    return w.reshape(shape)
+
+
 def energy_sensitivity(E, x_star, alive, theta, **kw):
     """∂x*/∂θ for an energy minimum — the ``F = −∇E`` instance of
     :func:`fixed_point_sensitivity`, with the rigid modes supplied.

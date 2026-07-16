@@ -24,7 +24,9 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from jax_morpho.evodevo.fixed_point import energy_sensitivity
+from jax_morpho.evodevo.fixed_point import (
+    energy_sensitivity, implicit_jvp, implicit_vjp, rigid_modes,
+)
 from jax_morpho.evodevo.genome_map import GRN, grn_field, grn_jacobian
 from jax_morpho.evodevo.mechanical import (
     equilibrate, field_morse_energy, hex_blob,
@@ -116,6 +118,64 @@ def phenotype_jacobian(a, org: Organism, solver="pinv", tol=1e-12):
                                    theta, solver=solver)              # (2N, 2N)
     dtheta_da = grn_jacobian(a, org.coords, org.grn)                  # (2N, n_genes)
     return dz_dx @ dx_dtheta @ dtheta_da
+
+
+def phenotype_vjp(a, org: Organism, beta, solver_kw=None, tol=1e-12):
+    """``Jᵀβ`` for the composed chain — **one linear solve**, any number of genes.
+
+    Right-to-left through `∂z/∂a = (∂z/∂x*)(∂x*/∂θ)(∂θ/∂a)`:
+
+    * ``(∂z/∂x*)ᵀβ`` — VJP of the readout: explicit, plain reverse-mode.
+    * ``(∂x*/∂θ)ᵀ·`` — the **implicit** transpose: one CG solve
+      (:func:`~jax_morpho.evodevo.fixed_point.implicit_vjp`).
+    * ``(∂θ/∂a)ᵀ·`` — VJP of the GRN: explicit.
+
+    Note the middle step is *not* `jax.vjp` through `equilibrate`: that neither
+    runs (it is a `lax.while_loop`) nor would be correct if it did (Phase 1). The
+    implicit transpose is what makes a reverse-mode path exist at all here.
+    """
+    kw = dict(solver_kw or {})
+    theta = theta_of(a, org)
+    x = develop(a, org, tol)
+
+    # readout: (∂z/∂x*)ᵀ β
+    _, vjp_read = jax.vjp(lambda q: procrustes_shape(q, org.idx, org.ref), x)
+    v_x = vjp_read(jnp.asarray(beta))[0]
+
+    # equilibrium: (∂x*/∂θ)ᵀ v_x — the one solve
+    F = lambda q, th: -jax.grad(field_morse_energy)(q, org.alive, th) * org.alive[:, None]
+    kw.setdefault("null_basis", rigid_modes(x, org.alive))
+    v_theta = implicit_vjp(F, x, theta, v_x, **kw)
+
+    # genome map: (∂θ/∂a)ᵀ v_theta
+    _, vjp_grn = jax.vjp(lambda g: grn_field(g, org.coords, org.grn), a)
+    return vjp_grn(v_theta)[0]
+
+
+def phenotype_jvp(a, org: Organism, da, solver_kw=None, tol=1e-12):
+    """``J δa`` for the composed chain — one linear solve. Forward twin of
+    :func:`phenotype_vjp`."""
+    kw = dict(solver_kw or {})
+    theta = theta_of(a, org)
+    x = develop(a, org, tol)
+
+    dtheta = jax.jvp(lambda g: grn_field(g, org.coords, org.grn), (a,), (da,))[1]
+    F = lambda q, th: -jax.grad(field_morse_energy)(q, org.alive, th) * org.alive[:, None]
+    kw.setdefault("null_basis", rigid_modes(x, org.alive))
+    dx = implicit_jvp(F, x, theta, dtheta, **kw)
+    return jax.jvp(lambda q: procrustes_shape(q, org.idx, org.ref), (x,), (dx,))[1]
+
+
+def lande_response_vjp(a, org: Organism, beta, M, tol=1e-12):
+    """``Δz̄ = J M Jᵀ β`` **without ever forming G or J** — two solves total.
+
+    The reverse-mode path DESIGN.md §2D calls for. Forming ``J`` costs one solve
+    per gene; this costs one solve each way, independent of both the gene count
+    and the trait count. At organism scale — where a solve is a matrix-free CG
+    over ~10⁶ unknowns — that is the difference between tractable and not.
+    """
+    JT_beta = phenotype_vjp(a, org, beta, tol=tol)
+    return phenotype_jvp(a, org, jnp.asarray(M) @ JT_beta, tol=tol)
 
 
 def make_organism(grn: GRN, a_ref, n_rings=2, landmark_stride=1, jitter=0.02,

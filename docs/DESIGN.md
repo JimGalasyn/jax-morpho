@@ -85,7 +85,8 @@ The two load-bearing interfaces are **θ** (developmental parameters) and **z**
 
 ### Extension points (locked decisions in **bold**)
 Status: A ✅ (`genome_map`), B ✅ (`mechanical`), C ✅ (`phenotype`),
-D partial (`quantgen` — G only; β and Δz̄ are Phase 3), E not started.
+D ✅ (`quantgen` + `response` — G, β, Δz̄=Gβ, and the two-solve `JMJᵀβ` path),
+E not started (Phase 4).
 
 - **A — genome→θ map.** **Full GRN/MLP** (nonlinear, multi-parameter), *not*
   affine. **Genome = the network's inputs (the evolving genes); the network is
@@ -357,14 +358,74 @@ solver noise (tolerance-independent).
   relative size O(ε). So the finite-ε linear rank is 2k−3, and 2k−4 is the ε→0
   tangent dimension where G lives.
 
-Next: Phase 3 — the quant-gen layer proper (β, `Δz̄ = Gβ`, the reverse-mode `Jᵀβ`
-path) + gate #3: reproduce the Fig-3C *pattern* with our development.
+## 3d. Phase 3 — the quant-gen layer and gate #3 ✅
+
+`genetics.py` (diploid loci → genome), `response.py` (the one-generation
+protocol), `quantgen.py` (β, `Δz̄ = Gβ`), plus the tangent shape space and the
+implicit VJP/JVP. 16 tests; `examples/demo_phase3_gate.py`.
+
+### Gate #3 — the Fig-3C pattern, on our development
+Stated against the measurement's own resolution rather than an arbitrary
+threshold. A response estimated at signal-to-noise `snr` can be tilted
+`arcsin(1/snr)` by noise alone, so nothing can be *shown* to align better:
+
+| p | angle_G | angle_P | snr | noise floor |
+|---|---|---|---|---|
+| 0.5 | **1.6–3.6°** | 20–29° | 19–23 | ~2.8° |
+| 0.25 | **1.9–5.3°** | 53–114° | 11–14 | ~4–5° |
+
+**G's error sits at the noise floor — consistent with exact.** P's is an order of
+magnitude above it: a genuine systematic error. The claim reproduces.
+
+### Three things that had to be right first
+- **P is singular in ambient shape coordinates**, so `β = P⁻¹s` is meaningless
+  there — not merely ill-conditioned. Fixed by working in the Procrustes
+  **tangent space** (`phenotype.tangent_basis`, 2k−4 dims, Kendall's standard
+  move): rank(P) goes 5-of-8 → 4-of-4.
+- **Environment is load-bearing.** With no non-heritable variance `P = G` exactly
+  and the comparison is vacuous. M-U's `u` exists for this reason; ours is extra
+  non-heritable inputs to the same GRN.
+- **Two protocol errors, both "I let something adapt that they hold fixed":**
+  sweeping *every* gene's MAF (they hold θ₁ at 0.5 and sweep θ₂ — the anisotropy
+  *is* the mechanism; without it G just shrinks uniformly and no contrast
+  appears), and recomputing the optimum per population (selection then always
+  pulls along whatever variance exists, so `s` can never misalign). Both produced
+  plausible-looking nulls.
+
+### What is *not* claimed
+**The monotone degradation of P as p → 0 does not reproduce.** That tail is where
+our SNR dies: the response shrinks ∝ 2pq while the noise floor is set by the
+environment-dominated phenotypic sd and does not. M-U buy it with 5000
+individuals × 50 replays ≈ 5e5 developments per point; we spend ~1e4.
+
+**And it cannot be bought by raising the genetic variance.** Measured: σ_γ
+0.02 → 0.08 lifts SNR but degrades `angle_G` 3.3° → 18.8°, because larger
+perturbations leave the linear regime G is defined in. **Gate #2's
+small-perturbation constraint and gate #3's SNR pull against each other** — sit
+where G is accurate and admit the MAF range that costs. Closing that gap is a
+compute problem (§5b), not a modelling one.
+
+### The reverse-mode path — and why it needs the IFT, not autodiff
+`Δz̄ = J M Jᵀβ` in **two solves** (`pipeline.lande_response_vjp`), independent of
+gene *and* trait count, versus one solve per gene to form J. It cannot be written
+as `jax.vjp` through the genome→phenotype map, for two independent reasons:
+(1) it does not run — `equilibrate` is a `lax.while_loop`, which reverse-mode
+autodiff does not support; (2) it would be wrong if it did — unrolling
+differentiates the relaxation *path*, not the fixed point (§1). So the implicit
+transpose (`fixed_point.implicit_vjp`, verified to 4.1e-11 against the dense
+Jacobian) is what makes a reverse-mode path exist here at all. Pinned by a test
+that asserts the naive route still raises.
+
+Next: Phase 4 — the evolution loop (the closed loop / game substrate) + gate #4,
+built to serve §5c's viral-punctuation testbed. Prerequisite met: CG-Newton (§2E).
 
 ## 4. Validation ladder (each rung a known-answer gate)
 1. implicit-diff sensitivity ⟺ finite-difference Jacobian. ✅ `8.44e-10` (§3b)
 2. `G = J M Jᵀ` ⟺ empirical `Cov(phi(a))` in the small-perturbation regime.
    ✅ `1.85e-03` at σ=1.25e-3, shrinking with σ (§3c)
-3. reproduce M-U Fig 3C / Fig 1C on their model (Phase 0). ✅
+3. reproduce M-U Fig 3C / Fig 1C on their model (Phase 0). ✅ — and the
+   *pattern* with our own development (Phase 3, §3d): G at the noise floor,
+   P an order of magnitude above it
 4. multi-generation loop matches quantitative-genetic expectations.
 No layer ships without its number.
 
@@ -374,10 +435,12 @@ No layer ships without its number.
 2. GRN genome map + landmark/Procrustes phenotype (non-degenerate) + gate #2.
    ✅ (§3c — gate #2 `1.85e-03`; chain vs FD raw `4.84e-09`)
 3. quant-gen layer on the mechanical engine; reproduce the Fig-3C *pattern* with
-   our development + gate #3.
-4. evolutionary loop (the closed loop / game substrate) + gate #4.
+   our development + gate #3. ✅ (§3d — G's error at the measurement noise floor,
+   P's an order of magnitude above it)
+4. evolutionary loop (the closed loop / game substrate) + gate #4 — built to
+   serve §5c's viral-punctuation testbed. Prerequisite met: CG-Newton (§2E).
 5. deferred: trajectory `s(t)`, real-DNA genome, non-potential development, the
-   game presentation layer.
+   game presentation layer, endogenous virus emergence (§5c).
 
 ## 5b. Architecting for massive campaigns
 
@@ -471,6 +534,64 @@ scale the run unit is **one individual's development**, the population is outer,
 and the fleet is the parallelism. The campaign axes `(arm, replicate_seed, …)`
 are the same in both regimes; only the granularity moves. Design the run config
 so both fit — see the `run-farm` thread.
+
+## 5c. Standing requirement — a testbed for viral-punctuated evolution
+
+Jim's requirement, and it is a design constraint on layer E rather than a later
+feature: **whatever we build must be a capable testbed for Villarreal's theory of
+retrovirus-punctuated evolution.** Morphospace already has the empirical hook —
+its macromutation A/B test found viral > point-mutation fitness at **8–9×
+across 3 seeds** (Kauffman/Villarreal), on the DNA-string GRN stack.
+
+### Phase 2 already found the mechanism this needs
+This is not a bolt-on to the G-matrix programme; it is the other half of it.
+
+* **Point mutation** is a *small* perturbation → stays in a developmental basin
+  → §3c's gate #2 regime → **G predicts the response** (gate #3: G's error sits
+  at the measurement noise floor).
+* **A retroviral insertion is not a small perturbation.** It is a large,
+  coordinated, multi-gene jump — exactly §3c's basin-crossing regime, where the
+  phenotype is **discontinuous in the genome** and no local Jacobian can describe
+  the transition.
+
+So **the basin structure is a candidate mechanism for punctuation itself**: viral
+macromutation jumps between developmental attractors; point mutation diffuses
+within one. That reframes the 8–9× viral advantage as *access to basins gradualism
+cannot reach*, and it is forward/forbidding rather than a fit — the crossing rate
+as a function of insertion size is a prediction, and the replay measures it.
+G-predicts-the-response and G-is-silent-across-basins are the same finding seen
+from two sides.
+
+### What the architecture must therefore preserve
+- **A pluggable variation operator.** Mendelian `recombine` (`genetics.py`) is
+  one; point mutation is another; **retroviral insertion is a third** — a block
+  of loci overwritten *from a donor lineage* (horizontal transfer), not a local
+  perturbation. `Architecture.gene_of_locus` already gives the block structure an
+  insertion needs; keep the operator a seam, not a hardcoded step of the loop.
+- **Multi-lineage populations with contact between them.** Horizontal transfer is
+  meaningless within a single panmictic pool — the donor has to come from
+  somewhere. This is the same replicate-lineage substrate the campaign work wants
+  (see the `run-farm` thread), which is convenient: one mechanism, two motives.
+- **Do not assume small perturbations anywhere structural.** The cost levers in
+  §5b are the live risk: adaptive fidelity keyed on the basin threshold would
+  silently *skip developing* exactly the viral macromutations that are the
+  experiment. Multi-fidelity, never surrogate-replacement — and viral variants
+  always develop.
+
+### Bonus / north star: an evolutionary loop that *creates* viruses
+Jim's stretch goal, and honestly labelled as one. Endogenous emergence — rather
+than an imposed insertion operator — is a different class of model: it needs
+genome elements that replicate on their **own** schedule (not the host's),
+transmit horizontally, and are selected at a level below the individual. That is
+a multilevel-selection substrate, not a variation operator, and nothing here
+currently supplies it.
+
+It is worth naming anyway, because it changes what "genome" must mean. The
+current genome is a fixed-length vector feeding a fixed MLP; a genome that can
+*acquire* elements is variable-length, which the MLP forbids and a
+recurrent/attention-over-genes map would allow. That is already flagged in §2A as
+the first extension to layer A — so the two roads meet. **Not a Phase 4 goal;
+recorded so Phase 4 does not build something that precludes it.**
 
 ## 6. Guardrails / non-goals
 - Falsifiability: every layer validated against a known answer; no fitting-as-

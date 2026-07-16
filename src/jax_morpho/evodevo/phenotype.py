@@ -118,6 +118,52 @@ def make_reference(pos, idx):
 
 
 # ---------------------------------------------------------------------------
+# Tangent shape space — the non-degenerate coordinates
+# ---------------------------------------------------------------------------
+
+def tangent_basis(ref):
+    """Orthonormal basis ``(2k, 2k−4)`` of the Procrustes tangent space at ``ref``.
+
+    **This is what makes the quantitative genetics well posed.** A shape vector
+    ``z`` has 2k coordinates but only 2k−4 degrees of freedom, so any covariance
+    of shapes — P and G alike — is singular in ambient coordinates *by
+    construction*. `β = P⁻¹s` is then not a hard inverse, it is a meaningless
+    one. Kendall's answer, and geometric morphometrics' standard practice, is to
+    work in the tangent space at the mean shape, where the four constraints are
+    linear and can simply be projected out.
+
+    The four directions removed at ``ref`` are exactly the ones §"Shape space is
+    deliberately degenerate" identifies: two translations, one rotation, and —
+    linearised here — the scale direction ``z₀`` itself. What remains is a
+    genuine 2k−4 coordinate system in which P is invertible whenever the
+    population actually varies in that many directions.
+    """
+    z0 = jnp.asarray(ref, float).ravel()
+    k = z0.shape[0] // 2
+    xy = z0.reshape(k, 2)
+
+    tx = jnp.stack([jnp.ones(k), jnp.zeros(k)], -1).ravel()
+    ty = jnp.stack([jnp.zeros(k), jnp.ones(k)], -1).ravel()
+    rot = jnp.stack([-xy[:, 1], xy[:, 0]], -1).ravel()
+    scale = z0                                   # radial: d/dt (t·z₀)
+
+    C = jnp.stack([tx, ty, rot, scale], -1)      # (2k, 4) the constrained span
+    # Columns of U beyond rank(C) span the orthogonal complement.
+    U, s, _ = jnp.linalg.svd(C, full_matrices=True)
+    return U[:, 4:]                              # (2k, 2k-4)
+
+
+def tangent_coords(z, ref, basis=None):
+    """Project shape(s) ``z`` into tangent coordinates about ``ref``.
+
+    Accepts a single ``(2k,)`` vector or a stacked ``(n, 2k)`` batch; returns
+    ``(2k−4,)`` or ``(n, 2k−4)``.
+    """
+    B = tangent_basis(ref) if basis is None else basis
+    return (jnp.asarray(z) - jnp.asarray(ref).ravel()) @ B
+
+
+# ---------------------------------------------------------------------------
 # Readout sensitivity
 # ---------------------------------------------------------------------------
 
