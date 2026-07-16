@@ -57,8 +57,19 @@ def _inputs(a, u):
 
 
 def develop_tangent(a, u, org, basis):
-    """Genomes + environments → shapes in tangent coordinates. Batched."""
+    """Genomes + environments → shapes in tangent coordinates. Batched.
+
+    The genome/environment split is a convention between caller and organism —
+    the GRN just sees one input vector — so a mismatch is checked here rather
+    than surfacing as a shape error deep inside ``grn_field``.
+    """
     full = jnp.asarray(_inputs(a, u))
+    expected = org.grn.W1.shape[0] - 2          # less the (x, y) positional input
+    if full.shape[-1] != expected:
+        raise ValueError(
+            f"genome ({np.shape(a)[-1]}) + environment ({np.shape(u)[-1]}) = "
+            f"{full.shape[-1]} inputs, but this organism's GRN expects "
+            f"{expected} (its W1 takes {org.grn.W1.shape[0]}, less 2 positional)")
     Z = PL.phenotype_population(full, org)
     return np.asarray(PH.tangent_coords(Z, org.ref, basis))
 

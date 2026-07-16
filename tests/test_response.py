@@ -265,6 +265,17 @@ class TestGenetics:
         assert off.shape == (10, 40)
         assert set(np.unique(off)).issubset({-1, 0, 1})
 
+    def test_mismatched_genome_environment_split_fails_clearly(self, setup):
+        """The genome/environment split is a convention between caller and
+        organism — the GRN sees one vector — so a mismatch must say so here
+        rather than as a shape error deep inside `grn_field`."""
+        org = setup["org"]
+        basis = PH.tangent_basis(org.ref)
+        a = np.zeros((3, N_GENES + 1))            # one gene too many
+        u = np.zeros((3, N_ENV))
+        with pytest.raises(ValueError, match="GRN expects"):
+            RS.develop_tangent(a, u, org, basis)
+
     def test_environment_is_not_heritable_but_is_present(self):
         """Zero environmental variance would collapse P onto G and make Fig 3C
         vacuous — the contrast being tested would not exist."""

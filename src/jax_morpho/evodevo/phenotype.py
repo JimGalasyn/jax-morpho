@@ -86,11 +86,21 @@ def procrustes_align(L, ref):
     """Rotate centred+scaled landmarks ``L`` onto ``ref``. Differentiable.
 
     Uses the 2D closed form rather than an SVD. Minimising ``‖R(φ)L − ref‖²``
-    over φ gives ``φ = atan2(Σ L×ref, Σ L·ref)`` — one ``atan2``, smooth
-    everywhere except the measure-zero case of a vanishing alignment (guarded
-    below). The SVD route is the textbook one for general dimension, but its
-    gradient is singular when singular values coincide, which for a near-round
-    tissue is not a hypothetical.
+    over φ gives ``φ = atan2(Σ L×ref, Σ L·ref)`` — one ``atan2``. The SVD route
+    is the textbook one for general dimension, but its gradient is singular when
+    singular values coincide, which for a near-round tissue is not a
+    hypothetical.
+
+    **Not guarded, deliberately.** If ``S = C = 0`` — the shape orthogonal to the
+    reference under *both* inner products, so no rotation is preferred and the
+    alignment is genuinely undefined — ``atan2(0, 0)`` returns 0 and its gradient
+    is NaN. A guard would paper over that with an arbitrary rotation and let the
+    NaN propagate silently as a plausible number instead. The case is measure-zero
+    for any reference derived from a real developed form (:func:`make_reference`
+    uses the mean genome's own equilibrium, so every individual is a small
+    rotation away from it), and a NaN is the correct, loud answer if it ever
+    happens. (An earlier version of this docstring claimed a guard that does not
+    exist — caught by Copilot on PR #3.)
     """
     S = (L[:, 0] * ref[:, 1] - L[:, 1] * ref[:, 0]).sum()   # Σ L × ref
     C = (L * ref).sum()                                     # Σ L · ref

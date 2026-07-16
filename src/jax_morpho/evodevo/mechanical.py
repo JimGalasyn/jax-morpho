@@ -45,7 +45,9 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from jax_morpho.evodevo.fixed_point import project_out, rigid_modes
+from jax_morpho.evodevo.fixed_point import (
+    _projected_operator, project_out, rigid_modes,
+)
 
 # Steepness and interaction cutoff stay global scalars in Phase 1; only the
 # adhesion and spacing fields are per-cell (i.e. genetically addressable).
@@ -318,16 +320,10 @@ def equilibrate(pos, alive, theta, a=A_DEFAULT, r_max=R_MAX_DEFAULT,
         qf = q.ravel()
         Z = rigid_modes(q, alive)                       # (2N, 3), orthonormal
 
-        def hvp(v):
-            return jax.jvp(gflat, (qf,), (v,))[1]
-
-        def M(v):
-            w = project_out(Z, v * amask_flat)
-            Hw = hvp(w) * amask_flat
-            return (project_out(Z, Hw)                  # physical subspace
-                    + Z @ (Z.T @ v)                     # identity on rigid modes
-                    + v * (1.0 - amask_flat))           # identity on dead cells
-
+        # F = −∇E, so ∂F/∂x = −H and `_projected_operator` (which builds P(−A)P)
+        # gives P H P — exactly the operator this Newton step needs.
+        Av = lambda v: -jax.jvp(gflat, (qf,), (v,))[1]
+        M = _projected_operator(Av, Z, amask_flat)
         rhs = project_out(Z, gflat(qf) * amask_flat)
         d, _ = jax.scipy.sparse.linalg.cg(M, rhs, tol=cg_tol, atol=0.0,
                                           maxiter=cg_maxiter)
@@ -415,16 +411,25 @@ def contact_topology(pos, alive=None, cutoff=CONTACT_CUTOFF):
     rearrangement, so this over-reports slightly — treat a changed contact set as
     "worth a look", and a large jump in the form itself as proof.
 
+    Indices are **original cell indices**, not compressed ones
+    ---------------------------------------------------------
+    Masking to live cells renumbers them, and a renumbered contact set is not
+    comparable to anything. Two individuals with the same padded layout but
+    *different* slots empty — which is exactly what growth produces — would each
+    report a pair ``(3, 4)`` meaning different original cells, and comparing the
+    sets would silently compare different tissues. So the mask is applied to the
+    *pairs*, and the original indices are kept. (Found by Copilot on PR #3.)
+
     Host-side, so not jittable or vmappable — a diagnostic, not part of the
     differentiable path.
     """
     P = np.asarray(pos)
-    if alive is not None:
-        P = P[np.asarray(alive) > 0.5]
+    live = (np.ones(len(P), bool) if alive is None
+            else np.asarray(alive) > 0.5)
     d = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=-1)
     i, j = np.triu_indices(len(P), 1)
-    return frozenset((int(a), int(b)) for a, b in zip(i[d[i, j] < cutoff],
-                                                      j[d[i, j] < cutoff]))
+    keep = (d[i, j] < cutoff) & live[i] & live[j]
+    return frozenset((int(a), int(b)) for a, b in zip(i[keep], j[keep]))
 
 
 def develop(theta, pos0, alive, a=A_DEFAULT, r_max=R_MAX_DEFAULT, tol=1e-12):

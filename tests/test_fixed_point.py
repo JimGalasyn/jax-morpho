@@ -142,6 +142,83 @@ class TestCGNewton:
         assert bool(ok), f"CG failed with dead cells: max|F| = {float(res):.3e}"
         assert float(jnp.abs(x[n_live:] - pos[n_live:]).max()) < 1e-14
 
+
+@pytest.fixture(scope="module")
+def padded():
+    """A padded tissue — live cells plus inert slots, as growth produces."""
+    P = M.hex_blob(1)
+    n_live = P.shape[0]
+    pos = jnp.concatenate([P, jnp.array([[9.0, 9.0], [11.0, 9.0]])])
+    alive = jnp.concatenate([jnp.ones(n_live), jnp.zeros(2)])
+    theta = M.uniform_theta(n_live + 2)
+    x, _, _, ok = M.equilibrate(pos, alive, theta, tol=TOL)
+    assert bool(ok)
+    return dict(x=x, alive=alive, theta=theta, n_live=n_live)
+
+
+class TestMaskedSystemsAreSafe:
+    """Regression: every CG path must handle the *dead-cell* null directions.
+
+    `pinv` discovers all of them itself. The CG paths do not — they need the
+    ``alive`` mask, and without it CG wanders into the unhandled null space and
+    returns **NaN**. `equilibrate`'s Newton step had that handling; the
+    sensitivity paths did not, because the projected operator had been written
+    out three times and only one copy carried the dead-cell term. It is now
+    factored into ``fixed_point._projected_operator``.
+
+    Found by Copilot on PR #3, and armed for Phase 4 — growth is what produces
+    padded cells in the first place.
+    """
+
+    def _F(self, padded):
+        return lambda q, th: M.force_residual(q, padded["alive"], th)
+
+    def test_implicit_vjp_is_finite_and_correct_on_a_padded_tissue(self, padded):
+        x, alive, theta = padded["x"], padded["alive"], padded["theta"]
+        v = jnp.asarray(np.random.default_rng(0).normal(0, 1, x.shape))
+        J = np.asarray(FP.energy_sensitivity(M.field_morse_energy, x, alive,
+                                             theta, solver="pinv"))
+        want = np.asarray(v).ravel() @ J
+        got = np.asarray(FP.implicit_vjp(self._F(padded), x, theta, v,
+                                         null_basis=FP.rigid_modes(x, alive),
+                                         alive=alive))
+        assert np.all(np.isfinite(got)), "implicit_vjp returned NaN on a mask"
+        assert np.linalg.norm(got - want) / np.linalg.norm(want) < 1e-6
+
+    def test_implicit_jvp_is_finite_and_correct_on_a_padded_tissue(self, padded):
+        x, alive, theta = padded["x"], padded["alive"], padded["theta"]
+        dth = jnp.asarray(np.random.default_rng(1).normal(0, 1, theta.shape))
+        J = np.asarray(FP.energy_sensitivity(M.field_morse_energy, x, alive,
+                                             theta, solver="pinv"))
+        want = J @ np.asarray(dth)
+        got = np.asarray(FP.implicit_jvp(self._F(padded), x, theta, dth,
+                                         null_basis=FP.rigid_modes(x, alive),
+                                         alive=alive)).ravel()
+        assert np.all(np.isfinite(got))
+        assert np.linalg.norm(got - want) / np.linalg.norm(want) < 1e-6
+
+    def test_cg_sensitivity_matches_pinv_on_a_padded_tissue(self, padded):
+        x, alive, theta = padded["x"], padded["alive"], padded["theta"]
+        Jp = FP.energy_sensitivity(M.field_morse_energy, x, alive, theta,
+                                   solver="pinv")
+        Jc = FP.energy_sensitivity(M.field_morse_energy, x, alive, theta,
+                                   solver="cg")
+        assert bool(jnp.all(jnp.isfinite(Jc)))
+        assert float(jnp.linalg.norm(Jc - Jp) / jnp.linalg.norm(Jp)) < 1e-6
+
+    def test_omitting_the_mask_is_what_broke(self, padded):
+        """Pin the failure mode itself, so the fix cannot be quietly undone.
+
+        Without ``alive`` the dead-cell directions are unhandled and CG produces
+        NaN. If this ever stops being NaN, the operator changed and these tests
+        need re-reading — a silently *finite* wrong answer would be far worse.
+        """
+        x, alive, theta = padded["x"], padded["alive"], padded["theta"]
+        v = jnp.asarray(np.random.default_rng(0).normal(0, 1, x.shape))
+        unguarded = FP.implicit_vjp(self._F(padded), x, theta, v,
+                                    null_basis=FP.rigid_modes(x, alive))
+        assert not bool(jnp.all(jnp.isfinite(unguarded)))
+
     def test_unknown_newton_solver_rejected(self, tissue):
         with pytest.raises(ValueError, match="unknown newton_solver"):
             M.equilibrate(tissue["pos0"], tissue["alive"], tissue["theta"],

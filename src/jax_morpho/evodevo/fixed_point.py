@@ -70,8 +70,19 @@ def rigid_modes(pos, alive=None):
     rigid-invariant energy at equilibrium.
 
     Dead (padded) cells contribute their own trivial zero modes — their forces
-    vanish identically — but those are handled by the pseudo-inverse rather than
-    being enumerated here.
+    vanish identically, so the Jacobian has zero rows and columns there — but
+    those are **not** in this basis.
+
+    .. warning::
+       That omission is only safe for the ``pinv`` path, which discovers every
+       null direction itself. **The CG paths do not**: handing this basis to
+       ``fixed_point_sensitivity(solver='cg')``, :func:`implicit_vjp` or
+       :func:`implicit_jvp` on a *padded* tissue without also passing ``alive``
+       leaves the dead-cell directions unhandled, and CG wanders into them and
+       returns **NaN** (measured on a padded tissue, against a dense reference
+       that returns a finite answer; found by Copilot on PR #3). Pass ``alive``
+       to those functions — :func:`energy_sensitivity` and the ``pipeline``
+       helpers do it for you — or use ``pinv``.
     """
     pos = jnp.asarray(pos, float)
     n = pos.shape[0]
@@ -94,12 +105,52 @@ def project_out(Z, v):
     return v - Z @ (Z.T @ v)
 
 
+def _flat_mask(alive, n_flat):
+    """(N,) alive mask → (2N,) mask over interleaved [x, y] coordinates."""
+    if alive is None:
+        return jnp.ones(n_flat)
+    return jnp.repeat(jnp.asarray(alive, float), 2)
+
+
+def _projected_operator(Av, Z, mask):
+    """The nonsingular stand-in for a singular ``A``, used by every CG path here.
+
+    ``A`` is singular in two independent ways and both must be neutralised, or CG
+    wanders off into the null space and returns NaN:
+
+    * the **rigid modes**, spanned by ``Z`` — always present for a
+      rigid-invariant energy;
+    * one trivial mode per **dead/padded cell** — their forces vanish
+      identically, so ``A`` has zero rows and columns there. ``mask`` handles
+      these. Passing ``alive=None`` (no padding) makes this term vanish.
+
+    Both are removed the same way: make the operator the **identity** along them.
+    On the physical subspace it is still ``P(−A)P``, which is PSD at a minimum,
+    so the composite is symmetric positive-definite and CG is entitled to run::
+
+        M = P (−A) P  +  Z Zᵀ  +  (I − mask)
+
+    Factored out because it was written three times and the dead-cell term was
+    present in only one of them — which is exactly how
+    ``implicit_vjp`` came to return NaN on a padded tissue (found by Copilot on
+    PR #3, confirmed against the dense reference).
+    """
+    def M(v):
+        w = project_out(Z, v * mask)
+        Aw = Av(w) * mask
+        return (project_out(Z, -Aw)          # physical subspace: P(−A)P
+                + Z @ (Z.T @ v)              # identity on the rigid modes
+                + v * (1.0 - mask))          # identity on dead cells
+    return M
+
+
 # ---------------------------------------------------------------------------
 # Implicit sensitivity
 # ---------------------------------------------------------------------------
 
 def fixed_point_sensitivity(F, x_star, theta, *, solver="pinv",
-                            null_basis=None, rcond=1e-8, cg_tol=1e-10):
+                            null_basis=None, alive=None, rcond=1e-8,
+                            cg_tol=1e-10):
     """∂x*/∂θ for a fixed point ``F(x*, θ) = 0``.
 
     Parameters
@@ -144,21 +195,18 @@ def fixed_point_sensitivity(F, x_star, theta, *, solver="pinv",
         if null_basis is None:
             raise ValueError("solver='cg' requires null_basis (see rigid_modes)")
         Z = null_basis
+        mask = _flat_mask(alive, xf.size)
 
         # Matrix-free A·v via a JVP through F — no Hessian is ever formed.
         def Av(v):
             return jax.jvp(lambda x: Ffun(x, theta), (xf,), (v,))[1]
 
-        # A = −H is negative-semidefinite at a minimum, so (−A) = H is PSD.
-        # Solve on the complement of the rigid modes and make the operator
-        # nonsingular by acting as the identity along them:
-        #     M = P(−A)P + Z Zᵀ ,   M x = P b  ⇒  x ⊥ Z  and  A x = −b.
-        def M(v):
-            return project_out(Z, -Av(project_out(Z, v))) + Z @ (Z.T @ v)
+        M = _projected_operator(Av, Z, mask)
 
         def solve_col(b):
-            x, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, b), tol=cg_tol,
-                                              atol=0.0, maxiter=10 * xf.size)
+            x, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, b * mask),
+                                              tol=cg_tol, atol=0.0,
+                                              maxiter=10 * xf.size)
             return x
 
         return jax.vmap(solve_col, in_axes=1, out_axes=1)(B)
@@ -166,8 +214,8 @@ def fixed_point_sensitivity(F, x_star, theta, *, solver="pinv",
     raise ValueError(f"unknown solver {solver!r}; expected 'pinv' or 'cg'")
 
 
-def implicit_vjp(F, x_star, theta, v, *, null_basis=None, cg_tol=1e-10,
-                 cg_maxiter=400):
+def implicit_vjp(F, x_star, theta, v, *, null_basis=None, alive=None,
+                 cg_tol=1e-10, cg_maxiter=400):
     """``(∂x*/∂θ)ᵀ v`` — the transpose sensitivity, in **one linear solve**.
 
     This is the path DESIGN.md §2D needs and the reason `Δz̄ = Jᵀβ`-style
@@ -206,25 +254,21 @@ def implicit_vjp(F, x_star, theta, v, *, null_basis=None, cg_tol=1e-10,
     if null_basis is None:
         raise ValueError("implicit_vjp requires null_basis (see rigid_modes)")
     Z = null_basis
+    mask = _flat_mask(alive, xf.size)
 
     def Av(w):
         return jax.jvp(lambda x: Ffun(x, theta), (xf,), (w,))[1]
 
-    # Same projected operator as fixed_point_sensitivity's CG path: (−A) is PSD
-    # at a minimum, and acting as the identity along the null space makes it
-    # invertible without touching the physical subspace.
-    def M(w):
-        return project_out(Z, -Av(project_out(Z, w))) + Z @ (Z.T @ w)
-
-    w, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, vf), tol=cg_tol,
+    M = _projected_operator(Av, Z, mask)
+    w, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, vf * mask), tol=cg_tol,
                                       atol=0.0, maxiter=cg_maxiter)
     # solve gave (−A)⁻¹v, so −A⁻¹v = +w; then (∂x*/∂θ)ᵀ v = −Bᵀ(A⁻¹v) = Bᵀ w
     _, vjp_theta = jax.vjp(lambda th: Ffun(xf, th), theta)
     return vjp_theta(w)[0]
 
 
-def implicit_jvp(F, x_star, theta, dtheta, *, null_basis=None, cg_tol=1e-10,
-                 cg_maxiter=400):
+def implicit_jvp(F, x_star, theta, dtheta, *, null_basis=None, alive=None,
+                 cg_tol=1e-10, cg_maxiter=400):
     """``(∂x*/∂θ) δθ`` — the forward twin of :func:`implicit_vjp`, one solve.
 
     ``= −A⁻¹ B δθ``: push ``δθ`` through ``B = ∂F/∂θ`` (an explicit JVP), then one
@@ -238,17 +282,16 @@ def implicit_jvp(F, x_star, theta, dtheta, *, null_basis=None, cg_tol=1e-10,
     if null_basis is None:
         raise ValueError("implicit_jvp requires null_basis (see rigid_modes)")
     Z = null_basis
+    mask = _flat_mask(alive, xf.size)
 
     def Av(w):
         return jax.jvp(lambda x: Ffun(x, theta), (xf,), (w,))[1]
 
-    def M(w):
-        return project_out(Z, -Av(project_out(Z, w))) + Z @ (Z.T @ w)
-
+    M = _projected_operator(Av, Z, mask)
     B_dtheta = jax.jvp(lambda th: Ffun(xf, th), (theta,), (dtheta,))[1]
     # solve (−A) w = B δθ  ⇒  w = −A⁻¹ B δθ = (∂x*/∂θ) δθ
-    w, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, B_dtheta), tol=cg_tol,
-                                      atol=0.0, maxiter=cg_maxiter)
+    w, _ = jax.scipy.sparse.linalg.cg(M, project_out(Z, B_dtheta * mask),
+                                      tol=cg_tol, atol=0.0, maxiter=cg_maxiter)
     return w.reshape(shape)
 
 
@@ -260,6 +303,7 @@ def energy_sensitivity(E, x_star, alive, theta, **kw):
     """
     F = lambda x, th: -jax.grad(E)(x, alive, th) * alive[:, None]
     kw.setdefault("null_basis", rigid_modes(x_star, alive))
+    kw.setdefault("alive", alive)      # padded cells are null directions too
     return fixed_point_sensitivity(F, x_star, theta, **kw)
 
 

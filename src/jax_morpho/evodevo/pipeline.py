@@ -145,6 +145,7 @@ def phenotype_vjp(a, org: Organism, beta, solver_kw=None, tol=1e-12):
     # equilibrium: (∂x*/∂θ)ᵀ v_x — the one solve
     F = lambda q, th: -jax.grad(field_morse_energy)(q, org.alive, th) * org.alive[:, None]
     kw.setdefault("null_basis", rigid_modes(x, org.alive))
+    kw.setdefault("alive", org.alive)      # padded cells are null directions too
     v_theta = implicit_vjp(F, x, theta, v_x, **kw)
 
     # genome map: (∂θ/∂a)ᵀ v_theta
@@ -162,6 +163,7 @@ def phenotype_jvp(a, org: Organism, da, solver_kw=None, tol=1e-12):
     dtheta = jax.jvp(lambda g: grn_field(g, org.coords, org.grn), (a,), (da,))[1]
     F = lambda q, th: -jax.grad(field_morse_energy)(q, org.alive, th) * org.alive[:, None]
     kw.setdefault("null_basis", rigid_modes(x, org.alive))
+    kw.setdefault("alive", org.alive)      # padded cells are null directions too
     dx = implicit_jvp(F, x, theta, dtheta, **kw)
     return jax.jvp(lambda q: procrustes_shape(q, org.idx, org.ref), (x,), (dx,))[1]
 

@@ -150,6 +150,34 @@ class TestDevelopmentalMultistability:
         for x in np.asarray(X)[jumped]:
             assert M.contact_topology(x) != ref_contacts
 
+    def test_contact_topology_reports_original_cell_indices(self):
+        """Regression: masking must not renumber cells.
+
+        Two individuals with the same padded layout but *different* slots empty
+        — which is exactly what growth produces — would each report a pair
+        ``(3, 4)`` meaning **different original cells** if the mask compressed
+        the indexing, and comparing their contact sets would silently compare
+        different tissues. Found by Copilot on PR #3.
+        """
+        P = M.hex_blob(2)
+        n = P.shape[0]
+        a_all = jnp.ones(n)
+        a_no3 = jnp.asarray(np.where(np.arange(n) == 3, 0.0, 1.0))
+
+        full = M.contact_topology(P, a_all)
+        no3 = M.contact_topology(P, a_no3)
+
+        # killing cell 3 removes exactly the pairs that mention cell 3...
+        assert no3 == frozenset(p for p in full if 3 not in p)
+        # ...and every surviving index still names the same original cell
+        assert all(i < n and j < n for i, j in no3)
+        assert not any(3 in p for p in no3)
+        # the identity of a pair is stable under masking elsewhere
+        a_no7 = jnp.asarray(np.where(np.arange(n) == 7, 0.0, 1.0))
+        no7 = M.contact_topology(P, a_no7)
+        shared = no3 & no7
+        assert shared == frozenset(p for p in full if not ({3, 7} & set(p)))
+
     def test_delaunay_would_be_the_wrong_fingerprint_here(self, setup):
         """Pins why :func:`contact_topology` is contact-based. A hex lattice is
         maximally cocircular, so its Delaunay triangulation flips diagonals under
