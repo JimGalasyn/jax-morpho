@@ -352,6 +352,99 @@ No layer ships without its number.
 5. deferred: trajectory `s(t)`, real-DNA genome, non-potential development, the
    game presentation layer.
 
+## 5b. Architecting for massive campaigns
+
+Design target: campaigns at organism scale (10⁶ cells) across populations,
+generations, replicate lineages and arms. §2E records the wall; this section
+records what to do about it. **The binding constraint is money, not wall-clock**
+— so the optimisation target is *cost per unit of science*, and cost has to be a
+first-class quantity in the architecture rather than a post-hoc surprise.
+
+### Who this is for (it decides the requirements)
+Not only us on one box. The intended user includes **funded researchers — the
+Milocco–Uller community itself — spending grant money at $1k–$20k per campaign**.
+From the measured cost model that envelope is not aspirational:
+
+| budget | GPU-h (spot ~$0.30) | campaign it buys at 10⁶ cells |
+|---|---|---|
+| $1 000 | 3 300 | P=G≈175, 10 replicates × 2 arms |
+| $5 000 | 16 700 | P=G≈390, 10 replicates × 2 arms |
+| $20 000 | 66 700 | P=G≈790, 10 replicates × 2 arms |
+
+(The 73-GPU-year worst case in §2E is ~$190k — *above* grant scale. The band that
+matters is $1k–$20k, and it lands squarely on a publishable design.)
+
+Grant money carries accountability, which turns four soft nice-to-haves into
+hard requirements:
+- **A pre-launch estimate and a hard spend cap.** Someone spending a grant cannot
+  discover the cost afterwards. `(P, G, N, replicates, arms) → GPU-h, $` must be
+  callable *before* launch, and the cap must be enforced, not advisory.
+- **Restart-exactness.** A $5k campaign that dies at 80% and cannot resume is a
+  $4k loss, not an inconvenience.
+- **Provenance as a published artifact.** Config hash, engine version, and
+  **cost** belong in the record: "this result cost $X on Y hardware" is
+  reproducibility metadata, not trivia.
+- **Portability.** Brokers and credentials must not assume our box.
+
+And one that is ours alone, and follows from the honesty frame (§0, §6):
+- **Ship the Milocco–Uller reference as a built-in campaign arm.** `reference_mu`
+  already reproduces their Fig 3C end-to-end. Making it an arm any campaign can
+  include means **every campaign carries its own known-answer gate** — the
+  validation ladder travels with the tool instead of living in our test suite. If
+  an external scientist is to trust a G computed by this engine, the calibration
+  should re-run alongside their result, not be cited from a paper.
+
+### Measured cost model (RTX 4090, 16 GB, 2026-07-16 — reproduce before trusting)
+| quantity | measured |
+|---|---|
+| memory | **~2.2 KB/cell** (float32, incl. neighbour list + autodiff tape) |
+| throughput | **2.08e7 cell-steps/s** at 1 M cells (47.98 ms/relax step) |
+| 1 M-cell organism | 2.21 GB → **~7 per 16 GB card**; 2 M cells OOMs |
+| development, primordium→adult | ≈ 2·N·relax_steps ≈ 4e8 cell-steps ≈ **19 s** |
+| float64 | **~4x slower, 2x memory** (bandwidth-bound — *not* the 64x the 4090's
+  1:64 FP64:FP32 spec ratio suggests; measured, because the spec-sheet guess is
+  wrong by 16x) |
+
+Everything below follows from those five numbers. A campaign estimator should be
+a function of them, run *before* launch — `(P, G, N, replicates, arms) → GPU-h, $`
+— not a scratch calculation after the bill.
+
+### The levers, in order of leverage
+1. **Keep float64 out of the inner loop.** The sensitivity engine needs it (§1's
+   Armijo finding is *about* float64's absolute resolution). Development and
+   fitness do not. Run development in float32 and compute `J`/`G` in float64
+   **rarely** — at the population mean, not per individual. Costs 4x time and
+   halves the organisms per card wherever it leaks.
+2. **Adaptive fidelity, keyed on the basin criterion.** §3c measured the
+   threshold: *zero* crossings at σ ≤ 1.25e-3, ~2% at σ=0.05, and within a basin
+   `G` reproduces the phenotype covariance to 1.85e-3. So most offspring are
+   linearly predictable from the ancestor's `J` and do not need developing.
+   Spend full development where the predicted perturbation approaches the
+   crossing threshold, and use `G` elsewhere.
+   > **This must stay multi-fidelity, never surrogate-replacement.** Predicting
+   > phenotypes with `G` and then selecting on them is quantitative genetics
+   > wearing the engine's clothes: it would make `G` self-confirming and destroy
+   > the ability to observe the one thing the mechanistic engine exists to
+   > observe — where the linearisation *fails*. Always develop a random
+   > subsample and measure the drift. The saving is real; the check is what keeps
+   > it honest (§6, and `insight_morphospace_falsifiability`).
+3. **Checkpoint at generation granularity, not mid-development.** The evolution
+   loop's state is the *genome population* — kilobytes, not field arrays — so
+   checkpointing it is nearly free. Mid-development checkpointing is pointless:
+   at 19 s/organism a preempted development is cheaper to redo than to persist.
+   A preempted 5000-GPU-hour lineage is not.
+4. **Resolution ladder.** 10⁶ cells is a *target*, not a requirement of every
+   fitness evaluation. Establish the coarsest resolution at which the selected
+   phenotype is resolution-invariant, and pay for full resolution only where the
+   science needs it. Unmeasured; worth a gate of its own.
+
+### Parallelism, restated
+Population-as-vmap-axis holds only while an organism is small (§2E). At organism
+scale the run unit is **one individual's development**, the population is outer,
+and the fleet is the parallelism. The campaign axes `(arm, replicate_seed, …)`
+are the same in both regimes; only the granularity moves. Design the run config
+so both fit — see the `run-farm` thread.
+
 ## 6. Guardrails / non-goals
 - Falsifiability: every layer validated against a known answer; no fitting-as-
   evidence.
