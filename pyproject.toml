@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jax-morpho"
-version = "0.1.1"
+version = "0.2.0"
 description = "Differentiable, GPU-scale developmental morphogenesis in JAX: a center-based tissue engine that reproduces real-epithelium statistics, scales to millions of cells, and maps an evolvable genome to form."
 readme = "README.md"
 license = { text = "MIT" }
