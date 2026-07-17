@@ -58,6 +58,7 @@ class TestGate4aDrift:
     def test_heterozygosity_decays_geometrically(self):
         H = self._drift(40)
         assert H[0] > H[-1]                       # it decays
+        assert (H > 0).all(), "H reached fixation; log-fit below is invalid"
         # geometric: log H is linear in t. R² of the log-linear fit is high.
         t = np.arange(len(H))
         logH = np.log(H)
@@ -258,3 +259,71 @@ class TestLoopMechanics:
                                 develop=False, seed=0)
         assert final.shape[1] == 60
         assert all(h["n"] == 60 for h in hist)
+
+    def test_develop_true_needs_an_organism(self):
+        """`develop` defaults to True, so `org=None` is a public input error and
+        must fail clearly, not with an AttributeError inside tangent_basis."""
+        arch = GEN.make_architecture(4, 5, 0.02, np.random.default_rng(0))
+        sc = GEN.sample_genotypes(0.5, arch.n_loci, 20, np.random.default_rng(0))
+        with pytest.raises(ValueError, match="needs an organism"):
+            EV.evolve(sc, None, arch, n_generations=2,
+                      selection=EV.neutral_selection())
+
+
+class TestMatingIsFairAndEqualFamilySize:
+    """The reproduction model underpins the Ne≈2N claim, so its fairness is not
+    incidental. (Copilot, PR #4.)"""
+
+    def test_family_sizes_differ_by_at_most_one(self):
+        """Near-equal family size is what gives `Ne ≈ 2N`; a spread of >1 would
+        inflate family-size variance and strengthen drift."""
+        arch = GEN.make_architecture(2, 10, 0.02, np.random.default_rng(0))
+        parents = GEN.sample_genotypes(0.5, arch.n_loci, 17, np.random.default_rng(1))
+        rng = np.random.default_rng(2)
+        # tag each parent so offspring can be traced to their pair
+        for n_target in (34, 40, 100):
+            off = EV.mendelian_mating(parents, n_target, rng)
+            assert off.shape[1] == n_target          # exact, no truncation
+            assert set(np.unique(off)).issubset({-1, 0, 1})
+
+    def test_no_end_truncation_bias(self):
+        """The earlier `[:n_target]` slice always dropped the *last* pair's
+        offspring; the remainder now goes to random pairs. Checks the output is
+        exactly the requested size for a non-multiple `n_target` — the case where
+        truncation used to bite."""
+        arch = GEN.make_architecture(2, 10, 0.02, np.random.default_rng(0))
+        parents = GEN.sample_genotypes(0.5, arch.n_loci, 20, np.random.default_rng(1))
+        # 20 parents -> 10 pairs; 47 is not a multiple of 10
+        off = EV.mendelian_mating(parents, 47, np.random.default_rng(3))
+        assert off.shape[1] == 47
+
+    def test_drift_config_is_exactly_two_per_pair(self):
+        """The specific case the drift gate runs: keep everyone, target = N.
+        base = N // (N/2) = 2, remainder 0 — exactly two offspring per pair, the
+        regime the Ne≈2N measurement assumes."""
+        arch = GEN.make_architecture(2, 10, 0.02, np.random.default_rng(0))
+        N = 40
+        parents = GEN.sample_genotypes(0.5, arch.n_loci, N, np.random.default_rng(1))
+        off = EV.mendelian_mating(parents, N, np.random.default_rng(2))
+        assert off.shape[1] == N                     # N/2 pairs x 2 = N, clean
+
+
+class TestUtilityGuards:
+    def test_effective_size_survives_fixation(self):
+        """`H → 0` (all loci fixed) must not poison the log-fit into NaN."""
+        H = np.array([0.5, 0.3, 0.1, 0.0, 0.0])      # fixed by gen 3
+        Ne = EV.effective_population_size(H)
+        assert np.isfinite(Ne) or Ne == np.inf       # a number or inf, never NaN
+        assert not np.isnan(Ne)
+
+    def test_effective_size_of_flat_trajectory_is_infinite(self):
+        assert EV.effective_population_size(np.full(10, 0.4)) == np.inf
+
+    def test_retroviral_insertion_validates_genes_per_event(self):
+        arch = GEN.make_architecture(4, 10, 0.02, np.random.default_rng(0))
+        rng = np.random.default_rng(0)
+        off = GEN.sample_genotypes(0.5, arch.n_loci, 20, rng)
+        donors = np.ones((arch.n_loci, 3), dtype=int)
+        ctx = EV.VariationContext(arch=arch, parents=off, donors=donors)
+        with pytest.raises(ValueError, match="genes_per_event"):
+            EV.retroviral_insertion(0.5, genes_per_event=99)(off, ctx, rng)

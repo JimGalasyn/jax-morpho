@@ -109,6 +109,10 @@ def retroviral_insertion(rate, genes_per_event=1):
     macromutation reach basins gradualism cannot?) is downstream work.
     """
     def op(offspring, ctx, rng):
+        if not 1 <= genes_per_event <= ctx.arch.n_genes:
+            raise ValueError(
+                f"genes_per_event={genes_per_event} out of range for an "
+                f"architecture with {ctx.arch.n_genes} genes (need 1..n_genes)")
         if ctx.donors is None or ctx.donors.shape[1] == 0:
             raise ValueError(
                 "retroviral_insertion needs a donor pool — horizontal transfer "
@@ -141,22 +145,44 @@ def compose(*ops):
 # ---------------------------------------------------------------------------
 
 def mendelian_mating(parents, n_target, rng):
-    """Random pairing, unlinked Mendelian transmission, two offspring per pair.
+    """Random pairing, unlinked Mendelian transmission, **near-equal family size**.
 
-    **Zero family-size variance**, hence `Ne ≈ 2N` (see the module docstring).
-    That is a modelling choice, not an accident: it keeps drift weak so that
+    Each pair makes ``n_target // n_pairs`` offspring, and the remainder is
+    distributed one extra to *randomly chosen* pairs — so family sizes differ by
+    at most one and family-size variance is ~0. That minimal variance is the
+    modelling choice behind `Ne ≈ 2N` (module docstring): it keeps drift weak so
     selection experiments are not swamped at the population sizes we can afford.
-    Swap this function for Poisson family sizes to recover `Ne ≈ N`.
+    Swap this for Poisson family sizes to recover `Ne ≈ N`.
+
+    Two details Copilot flagged on PR #4, both fixed here rather than papered over:
+
+    * When ``n_sel`` is odd one parent cannot pair. Because ``perm`` is shuffled,
+      the unpaired parent is *random*, not systematically the last — but it is
+      still dropped, which is the honest behaviour of an even-pairing scheme and
+      is now stated rather than silent.
+    * The remainder is spread to random pairs, **not** taken by truncating the
+      offspring array from the end — the earlier ``[:n_target]`` slice
+      systematically underweighted the last pair whenever ``n_target`` was not a
+      multiple of ``n_pairs``. In the two configurations the gates actually use
+      (drift: ``n_target = 2·n_pairs``; selection: an exact multiple) there was no
+      remainder and the numbers are unaffected — but the general path was biased.
     """
     n_sel = parents.shape[1]
     if n_sel < 2:
         raise ValueError(f"need >= 2 parents to mate, got {n_sel}")
-    perm = rng.permutation(n_sel)
+    perm = rng.permutation(n_sel)                       # random -> random drop if odd
     pairs = perm[: 2 * (n_sel // 2)].reshape(-1, 2)
-    n_off_per_pair = max(1, int(np.ceil(n_target / len(pairs))))
-    off = GEN.recombine(parents[:, pairs[:, 0]], parents[:, pairs[:, 1]],
-                        n_off_per_pair, rng)
-    return off[:, :n_target]
+    n_pairs = len(pairs)
+    pA, pB = parents[:, pairs[:, 0]], parents[:, pairs[:, 1]]
+
+    base, rem = divmod(n_target, n_pairs)
+    blocks = []
+    if base > 0:
+        blocks.append(GEN.recombine(pA, pB, base, rng))
+    if rem > 0:                                          # one extra to `rem` random pairs
+        extra = rng.choice(n_pairs, size=rem, replace=False)
+        blocks.append(GEN.recombine(pA[:, extra], pB[:, extra], 1, rng))
+    return np.concatenate(blocks, axis=1)               # exactly n_target, no truncation
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +265,10 @@ def evolve(scores, org, arch, *, n_generations, selection,
     reads. It costs one developmental Jacobian per generation.
     """
     rng = np.random.default_rng(seed)
+    if develop and org is None:
+        raise ValueError("develop=True needs an organism (org=None). Pass an "
+                         "Organism, or set develop=False for a neutral drift run "
+                         "whose selection ignores the phenotype.")
     if develop and basis is None:
         basis = PH.tangent_basis(org.ref)
     if measure_response and not develop:
@@ -279,10 +309,17 @@ def effective_population_size(H, drop_first=0):
 
     Fits the geometric decay in log space. Returns `inf` if `H` does not decay
     (no drift), which is the honest answer rather than a division by zero.
+
+    Fixation (`H → 0`, all loci homozygous) is guarded: `log(0) = −∞` would poison
+    the fit. Any non-positive tail is dropped, and if fewer than two usable points
+    remain the trajectory carried no fittable decay and the result is `inf`.
     """
     H = np.asarray(H, float)[drop_first:]
-    t = np.arange(len(H))
-    slope = np.polyfit(t, np.log(H), 1)[0]
+    good = np.isfinite(H) & (H > 0)
+    if good.sum() < 2:
+        return np.inf
+    t = np.arange(len(H))[good]
+    slope = np.polyfit(t, np.log(H[good]), 1)[0]
     rate = 1.0 - np.exp(slope)
     if rate <= 0:
         return np.inf
