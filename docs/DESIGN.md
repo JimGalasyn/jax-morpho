@@ -85,8 +85,7 @@ The two load-bearing interfaces are **θ** (developmental parameters) and **z**
 
 ### Extension points (locked decisions in **bold**)
 Status: A ✅ (`genome_map`), B ✅ (`mechanical`), C ✅ (`phenotype`),
-D ✅ (`quantgen` + `response` — G, β, Δz̄=Gβ, and the two-solve `JMJᵀβ` path),
-E not started (Phase 4).
+D ✅ (`quantgen` + `response`), E ✅ (`evolution` — the loop, gate #4, §5c seams).
 
 - **A — genome→θ map.** **Full GRN/MLP** (nonlinear, multi-parameter), *not*
   affine. **Genome = the network's inputs (the evolving genes); the network is
@@ -427,8 +426,69 @@ transpose (`fixed_point.implicit_vjp`, verified to 4.1e-11 against the dense
 Jacobian) is what makes a reverse-mode path exist here at all. Pinned by a test
 that asserts the naive route still raises.
 
-Next: Phase 4 — the evolution loop (the closed loop / game substrate) + gate #4,
-built to serve §5c's viral-punctuation testbed. Prerequisite met: CG-Newton (§2E).
+## 3e. Phase 4 — the evolution loop and gate #4 ✅
+
+`evolution.py`: population → develop → select → reproduce → repeat, with the §5c
+seams built in. 13 tests; `examples/demo_phase4_gate.py`. This is the layer where
+Phases 1–3 stop being a one-generation measurement and become a population moving
+through time — and where the compounding question, which only exists over time,
+gets asked.
+
+### Gate #4a — neutral drift and the effective population size
+With no selection, heterozygosity decays geometrically (log-linear R² > 0.98) at
+`1/(2Ne)`. **The load-bearing number is `Ne ≈ 2N`, not `N`** — measured `Ne/N` =
+1.9–2.0 across N = 20/40/80. The default mating gives every pair exactly two
+offspring, so family-size variance is zero and `Ne ≈ 2N − 1` (the equal-family
+case). Drift is half as strong as naive Wright-Fisher. This is a property of the
+reproduction model, not the genetics; it was *measured before asserting*, which
+is the only reason the gate reads Ne≈2N instead of "fixing" the code to hit N.
+
+### Gate #4b — does the one-generation prediction compound? *Only while variance lasts.*
+The honest finding, and a better one than "it compounds perfectly." Under strong
+truncation selection:
+
+- **The mean advances on the optimum and plateaus** — a heritability-limited
+  selection limit. Heterozygosity collapses (0.50 → ~0.02 over 12 generations);
+  the response saturates exactly as the variance runs out.
+- **Per-generation `Gβ` tracks the realised response while variance is healthy,
+  then fails.** 8-seed binned medians: **21°** at het≈0.48, **40°** at het≈0.40,
+  **78°** at het≈0.30. The cause is specific: `β = P⁻¹s` destabilises as
+  selection drives P toward singular. Phase 3 validated `Δz̄ = Gβ` at *constant*
+  high heterozygosity; iterating it *through variance collapse* is a strictly
+  harder claim, and this is where our tooling's boundary is.
+- **G must be recomputed each generation.** A G frozen at generation 0 describes a
+  population that no longer exists — its (fixed) G times a growing β overshoots
+  the recomputed prediction by the end of the run.
+
+This is forward/forbidding with a number: the prediction is good above het≈0.42
+and gone below ≈0.30, and the response is bounded by the cumulative genetic
+variance. It is not a menu-fit — the failure boundary is a prediction, tested.
+
+### The §5c seams — a testbed for viral punctuation
+The variation operator is a seam, not a hardcoded step, because the punctuation
+experiment is exactly a swap of it:
+
+- **`point_mutation(rate)`** — gradualism: each locus independently re-drawn. A
+  small, within-basin perturbation (Phase 2/3 regime, G predicts).
+- **`retroviral_insertion(rate)`** — punctuation: an infected offspring gets a
+  donor lineage's **entire gene**, wholesale. A coordinated multi-locus jump,
+  which is Phase 2's *basin-crossing* regime — the phenotype is discontinuous
+  there and no local Jacobian describes it. **Requires a donor pool** (it raises
+  without one), because horizontal transfer has to transfer *from somewhere* —
+  which is why §5c also requires multi-lineage populations, and why
+  `Architecture.gene_of_locus` was kept (it supplies the gene block an insertion
+  overwrites). The operator exists so the seam is real and exercised; the
+  punctuation *study* (does viral macromutation reach basins gradualism cannot?)
+  is the science this testbed now supports.
+
+The loop takes `develop=False` for the neutral null (drift needs no phenotype)
+and rejects `measure_response=True` without development (nothing to measure a
+response in) — both to keep a wrong call loud rather than silent.
+
+Next: the deferred axes (§5) — trajectory sensitivity, real-DNA genome,
+non-potential/growth-driven development, endogenous virus emergence — and the
+punctuation study the seams now make possible. Organism scale still wants the
+FIRE/Nesterov globalisation flagged in §2E.
 
 ## 4. Validation ladder (each rung a known-answer gate)
 1. implicit-diff sensitivity ⟺ finite-difference Jacobian. ✅ `8.44e-10` (§3b)
@@ -437,7 +497,8 @@ built to serve §5c's viral-punctuation testbed. Prerequisite met: CG-Newton (§
 3. reproduce M-U Fig 3C / Fig 1C on their model (Phase 0). ✅ — and the
    *pattern* with our own development (Phase 3, §3d): G at the noise floor,
    P an order of magnitude above it
-4. multi-generation loop matches quantitative-genetic expectations.
+4. multi-generation loop matches quantitative-genetic expectations. ✅ Ne≈2N;
+   Gβ tracks the response above het≈0.42, fails below ≈0.30 (§3e)
 No layer ships without its number.
 
 ## 5. Sequencing

@@ -4,7 +4,43 @@ All notable changes to this project are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features).
 
-## [Unreleased] — Phases 1–3: our development, end to end, and the loop closed
+## [Unreleased] — Phase 4: the evolution loop over time
+
+### Added — `evolution` (layer E)
+- **The loop**: population → develop → select → reproduce → repeat, with the §5c
+  seams built in from the start. `evolve()` records a per-generation history and,
+  with `measure_response=True`, rebuilds `G`, `P`, `β` and `Gβ` each generation.
+- **Gate #4a — neutral drift.** Heterozygosity decays geometrically (log-linear
+  R² > 0.98); the effective size is **`Ne ≈ 2N`, not `N`**, because the default
+  mating gives every pair exactly two offspring (zero family-size variance, the
+  equal-family case). Measured `Ne/N` = 1.9–2.0 across N = 20/40/80. Drift is half
+  as strong as naive Wright-Fisher — a property of the reproduction model, and
+  measured before it was asserted.
+- **Gate #4b — does the prediction compound?** *Only while variance lasts*, which
+  is the honest finding. Under strong selection the mean advances on the optimum
+  and **plateaus** as heterozygosity collapses (a heritability-limited selection
+  limit). Per-generation `Gβ` tracks the realised response at high variance and
+  **fails as it is spent** — 8-seed binned medians 21° (het≈0.48) → 40° (0.40) →
+  78° (0.30) — because `β = P⁻¹s` destabilises as P approaches singular. G is
+  recomputed each generation: a G frozen at gen 0 describes a population that no
+  longer exists, and its fixed G × a growing β overshoots by the end.
+
+### The §5c variation seams — a testbed for viral punctuation
+- **`point_mutation(rate)`** — gradualism, a within-basin per-locus perturbation.
+- **`retroviral_insertion(rate)`** — punctuation: overwrites a donor lineage's
+  **entire gene** into an offspring, wholesale (the coordinated multi-locus jump
+  that Phase 2 measured as basin-crossing). **Requires a donor pool** (raises
+  without one — horizontal transfer must transfer from *somewhere*), which is why
+  §5c requires multi-lineage populations. It is an **upsert over a fixed-length
+  genome, not an insert**: it overwrites existing loci and cannot add sequence —
+  true insertional/multi-copy retroviral dynamics need the variable-length genome
+  deferred to §2A/§5c. `compose()` stacks operators (mutation *and* insertion).
+- The loop rejects `measure_response=True` without development and accepts
+  `develop=False` only for the neutral null — both to keep a wrong call loud.
+
+109 tests green (13 new). Demo: `examples/demo_phase4_gate.py`.
+
+## [Unreleased-1-3] — Phases 1–3: our development, end to end, and the loop closed
 
 ### Added — docs
 - **`docs/ENVIRONMENT.md`** — a proposal for the tiered environment & ecology

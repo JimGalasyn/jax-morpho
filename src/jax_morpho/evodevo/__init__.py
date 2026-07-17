@@ -13,9 +13,15 @@ Phase 2 wires the rest of the spine: a nonlinear GRN genome map (``genome_map``)
 a landmark + Procrustes shape readout (``phenotype``), the composed
 genome→shape pipeline (``pipeline``), and the delta-method G (``quantgen``).
 
-Phase 3 closes the loop: a genetic architecture of diploid loci (``genetics``),
-the one-generation response to selection (``response``), and the two-solve
-``Δz̄ = J M Jᵀβ`` path that needs no G and no J.
+Phase 3 completes the quant-gen layer: a genetic architecture of diploid loci
+(``genetics``), the one-generation response to selection (``response``), and the
+two-solve ``Δz̄ = J M Jᵀβ`` path that needs no G and no J.
+
+Phase 4 runs the loop over time (``evolution``): population → develop → select →
+reproduce → repeat, with pluggable variation (point mutation, retroviral
+insertion) and selection seams. Where Phase 3 asked "does `Δz̄ = Gβ` predict one
+generation?", Phase 4 asks whether it *compounds* — and finds it does only while
+genetic variance is healthy.
 
 See docs/DESIGN.md.
 """
@@ -43,6 +49,19 @@ from jax_morpho.evodevo.response import (
     reference_optimum,
     run_sweep,
     simulate_response,
+)
+from jax_morpho.evodevo.evolution import (
+    VariationContext,
+    compose,
+    effective_population_size,
+    evolve,
+    heterozygosity,
+    mendelian_mating,
+    neutral_selection,
+    no_variation,
+    point_mutation,
+    retroviral_insertion,
+    truncation_toward,
 )
 from jax_morpho.evodevo.genome_map import GRN, grn_field, grn_jacobian, init_grn
 from jax_morpho.evodevo.mechanical import (
@@ -161,4 +180,9 @@ __all__ = [
     "lande_response", "truncation_select", "angle_deg",
     # the one-generation response protocol (Phase 3)
     "simulate_response", "run_sweep", "reference_optimum",
+    # the evolution loop — layer E (Phase 4)
+    "evolve", "heterozygosity", "effective_population_size",
+    "mendelian_mating", "truncation_toward", "neutral_selection",
+    "VariationContext", "no_variation", "point_mutation",
+    "retroviral_insertion", "compose",
 ]
