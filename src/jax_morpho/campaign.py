@@ -214,36 +214,47 @@ def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardw
 
     launch = LaunchSpec(image=args.image, onstart=_ONSTART,
                         label=spec.get("gtag", "morpho-campaign"))
-    host_spec = HostSpec(gpu_name=args.gpu, max_dph=args.max_dph)
+    host_spec = HostSpec(gpu_name=args.gpu, max_dph=args.max_dph, min_cuda=0.0)
     executor = ProviderExecutor(
         provider, RUN_FN_REF, launch, host_spec=host_spec,
-        local_work_dir=args.out, config_class=CONFIG_CLASS_REF)
+        local_work_dir=args.out, config_class=CONFIG_CLASS_REF,
+        # The default image installs the engine system-wide (no venv) and exposes
+        # it as `python`; results sync under /root. Both match _ONSTART below.
+        remote_python="python", remote_work_dir="/root/runs")
 
-    registry = FileRunRegistry(args.out)
-    sink = JsonlEventSink()
-    admission = ProbeAdmission(require_gpu=True)
     configs = plan_configs(spec)
     print(f"launching {len(configs)} legs on {args.provider} "
           f"(cap ${args.cap_usd:.2f}); ledger -> {args.ledger}")
     try:
-        run_campaign(configs, evodevo_run, registry=registry, sink=sink,
-                     admission=admission, executor=executor)
+        # A ProviderExecutor is driven DIRECTLY (it registers + runs on the rented
+        # box and syncs results back to local_work_dir) — NOT through run_campaign,
+        # which is the in-process Executor-protocol path. Admission (require_gpu) is
+        # enforced by the worker on the box, so none is passed here.
+        results = executor.run(configs)
     finally:
         # Teardown is best-effort (§ run-farm README): always reap strays after.
         print("campaign done. Run `run-farm-reap` to catch any create-window "
               "orphans, and check the ledger:", args.ledger)
+    for r in results:
+        if r.get("error"):
+            print(f"  {r.get('run')}: ERROR {r['error']}")
     _report_results(args.out, configs)
     return 0
 
 
-# Bootstrap a rented box: install run-farm + jax-morpho, then signal readiness the
-# ProviderExecutor probes for. Kept minimal; override the image with --image.
+# Bootstrap a rented box: install jax-morpho (which pulls run-farm), then echo the
+# readiness marker the ProviderExecutor probes for. Matched to the default
+# `python:3.11-slim` image (Python 3.11 — the engine's floor — with pip; installing
+# system-wide, so `remote_python="python"` finds it). Verified end-to-end against the
+# worker path (run_farm.remote.run_one) that a booted box runs. GPU-scale evolve
+# campaigns override `--image` with a CUDA + Python-3.11 image and swap the pip line
+# for `'jax[cuda12]' 'jax-morpho[scale] @ git+...'`.
 _ONSTART = r"""#!/bin/bash
 set -e
-python -m venv /workspace/jaxenv
-/workspace/jaxenv/bin/pip install -q --upgrade pip
-/workspace/jaxenv/bin/pip install -q 'jax[cuda12]' \
-  'jax-morpho[scale] @ git+https://github.com/JimGalasyn/jax-morpho.git'
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq git >/dev/null
+pip install -q "jax-morpho @ git+https://github.com/JimGalasyn/jax-morpho.git"
 echo "ENGINE_READY"
 """
 
@@ -289,7 +300,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="hard dollar ceiling; renting past it is refused")
     pf.add_argument("--gpu", default="RTX_3090", help="HostSpec.gpu_name")
     pf.add_argument("--max-dph", type=float, default=0.40, help="$/hr ceiling per host")
-    pf.add_argument("--image", default="nvidia/cuda:12.4.1-runtime-ubuntu22.04")
+    # Python 3.11 (the engine's floor) + pip, no CUDA hook (so no nvidia-container
+    # create failures). Override with a CUDA + py3.11 image for GPU-scale campaigns.
+    pf.add_argument("--image", default="python:3.11-slim")
     pf.add_argument("--ledger", default="campaign_out/ledger.jsonl")
     pf.add_argument("--out", default="campaign_out")
     return p
