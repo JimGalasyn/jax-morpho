@@ -48,6 +48,17 @@ from jax_morpho.stats import (
     mean_sides,
     side_distribution,
 )
+# Campaign layer (run-farm consumer): the config, the injected RunFn, the
+# config_factory, and the re-exported checkpoint helpers. See runs/runfns/
+# farm_config and DESIGN.md §5b.
+from jax_morpho.runs import (
+    RunConfig,
+    load_checkpoint,
+    run_dir,
+    save_checkpoint,
+)
+from jax_morpho.runfns import evodevo_run, evolve_lineage, mu_gate
+from jax_morpho.farm_config import morpho_leg_to_config
 
 __all__ = [
     "__version__",
@@ -64,4 +75,7 @@ __all__ = [
     # topology statistics
     "POISSON_VORONOI_SIDES", "GIBSON_EPITHELIUM_SIDES", "l1_distance",
     "side_distribution", "mean_sides",
+    # campaign layer (run-farm consumer)
+    "RunConfig", "save_checkpoint", "load_checkpoint", "run_dir",
+    "evodevo_run", "evolve_lineage", "mu_gate", "morpho_leg_to_config",
 ]
