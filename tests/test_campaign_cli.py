@@ -279,3 +279,20 @@ def test_build_fleet_rejects_unknown_provider(tmp_path, monkeypatch):
     args = _fleet_args(provider="gcp", out=str(tmp_path))
     with pytest.raises(ValueError, match="unknown provider"):
         C._build_fleet(SPEC, args)
+
+
+def test_fast_fail_clamps_probe_timeout_to_remaining_budget(monkeypatch):
+    # Regression: a probe's wall-timeout must be clamped to the time left, so a
+    # dead host fails over within the budget instead of budget + a full 15s/30s probe.
+    monkeypatch.setattr(C.time, "sleep", lambda *_: None)
+    seen = []
+
+    def rec_ssh(key, host, port, cmd, timeout=30):
+        seen.append(timeout)
+        return (255, "refused")
+
+    monkeypatch.setattr(C, "_ssh", rec_ssh)
+    ex = _fast_fail(ssh_grace=0.05, ready_timeout=5.0)
+    with pytest.raises(C.HostProbeFailed, match="SSH never reachable"):
+        ex._wait_engine_ready(_DummyHost())
+    assert seen and all(t <= 0.05 + 1e-9 for t in seen)   # never the 15s probe cap

@@ -354,31 +354,38 @@ class FastFailExecutor(ProviderExecutor):
 
     def _wait_engine_ready(self, host) -> None:
         # Phase 1: SSH reachability. Refused-and-refused-again => dead host, fail over.
-        ssh_deadline = time.monotonic() + self.ssh_grace
-        while time.monotonic() < ssh_deadline:
-            rc, _ = _ssh(self.key_path, host.ssh_host, host.ssh_port, "echo OK",
-                         timeout=15)
-            if rc == 0:
-                break
-            time.sleep(8)
-        else:
+        if not self._poll_until(host, "echo OK", self.ssh_grace,
+                                probe_cap=15.0, sleep_cap=8.0):
             raise HostProbeFailed(
                 f"SSH never reachable on {host.id} within {self.ssh_grace:.0f}s "
                 f"({host.ssh_host}:{host.ssh_port}) -> failover")
         # Phase 2: engine install (import the RunFn's module) within ready_timeout.
         check = f"{self.remote_python} -c 'import {self.engine_module}'"
-        deadline = time.monotonic() + self.ready_timeout
-        last = ""
-        while time.monotonic() < deadline:
-            rc, out = _ssh(self.key_path, host.ssh_host, host.ssh_port, check,
-                           timeout=30)
+        if not self._poll_until(host, check, self.ready_timeout,
+                                probe_cap=30.0, sleep_cap=10.0):
+            raise HostProbeFailed(
+                f"engine not ready on {host.id} within {self.ready_timeout:.0f}s: "
+                f"{self._last_probe_out[-200:]}")
+
+    def _poll_until(self, host, cmd: str, budget: float, *, probe_cap: float,
+                    sleep_cap: float) -> bool:
+        """Poll `cmd` over SSH until it exits 0 or `budget` seconds elapse; True on
+        success. Each probe's wall-timeout AND the backoff sleep are clamped to the
+        time remaining, so a never-ready host fails over within ~`budget` (not
+        `budget` + one full probe + one full sleep) — the point of the fast-fail
+        split. Stashes the last output for the caller's error message."""
+        deadline = time.monotonic() + budget
+        self._last_probe_out = ""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            rc, out = _ssh(self.key_path, host.ssh_host, host.ssh_port, cmd,
+                           timeout=min(probe_cap, remaining))
             if rc == 0:
-                return
-            last = out
-            time.sleep(10)
-        raise HostProbeFailed(
-            f"engine not ready on {host.id} within {self.ready_timeout:.0f}s: "
-            f"{last[-200:]}")
+                return True
+            self._last_probe_out = out
+            time.sleep(min(sleep_cap, max(0.0, deadline - time.monotonic())))
 
 
 def _report_results(out: str, configs, subdir: str = "") -> None:
