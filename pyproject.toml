@@ -34,6 +34,17 @@ dependencies = [
   "jax>=0.10",
   "numpy>=1.24",
   "scipy>=1.10",
+  # The campaign / GPU-farming layer, extracted from jax-solitons at rule-of-three
+  # (2026-07): config-hashed registry, restart-exact checkpoints, spot-fleet
+  # executors, cloud brokers, and an ENFORCED dollar cap. jax_morpho.runs.RunConfig
+  # structurally satisfies run_farm.RunConfig; the physics crosses the boundary as
+  # runfns:evodevo_run (an evolve lineage or the M-U known-answer gate).
+  # HARD (not optional) dependency by design: runs.py re-exports run-farm's
+  # checkpoint helpers (save/load_checkpoint, run_dir), the restartable-run contract
+  # DESIGN.md §5b leans on even for a single local lineage. run-farm's base deps are
+  # only jax + numpy (both already required above; the cloud SDKs live behind its own
+  # `modal`/`s3` extras), so the engine-only user pulls zero net-new transitive deps.
+  "run-farm>=0.1.1",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +57,15 @@ test = [
 # Cell-list scaling (jax_morpho.scale). Heavy transitive tree; install only
 # when you need O(N) relaxation toward 10^5-10^6 cells: pip install '.[scale]'
 scale = ["jax-md>=0.2"]
+# Cloud executors for a real fleet campaign (run_farm's own extras): the Modal
+# serverless executor and the S3 object-store registry/sink backend. The Vast and
+# RunPod brokers are stdlib-only and need no extra. Install to point a campaign at
+# rented hardware:  pip install '.[fleet]'
+fleet = ["run-farm[modal,s3]>=0.1.1"]
+
+[project.scripts]
+# Plan / cost / launch an evodevo fleet campaign (run-farm consumer).
+jax-morpho-campaign = "jax_morpho.campaign:main"
 
 [project.urls]
 Homepage = "https://github.com/JimGalasyn/jax-morpho"
