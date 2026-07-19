@@ -139,3 +139,160 @@ def test_evodevo_run_rejects_unknown_kind():
     from jax_morpho.runfns import evodevo_run
     with pytest.raises(ValueError, match="unknown run kind"):
         evodevo_run(RunConfig(kind="nonsense"), _tiny_ctx())
+
+
+# --- fleet wiring: productized RunPod-sshd onstart + fast-fail executor --------
+# `cmd_fleet` rents hardware (`# pragma: no cover`), but the wiring it delegates to
+# — onstart builders, key reading, the fast-fail readiness split, and provider→onstart
+# selection in `_build_fleet` — is pure and exercised here (providers monkeypatched).
+
+def _fleet_args(**over):
+    import argparse
+    base = dict(provider="vast", cap_usd=5.0, gpu="RTX_3090", max_dph=0.40,
+                cloud_type="secure", ssh_key="~/.ssh/vastai", ssh_grace=150.0,
+                ready_timeout=480.0, rent_timeout=240.0, max_attempts=20,
+                image="python:3.11-slim", ledger="x/ledger.jsonl", out="x")
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_vast_onstart_installs_engine_no_sshd():
+    o = C._vast_onstart()
+    assert "jax-morpho @" in o and "archive/refs/heads/main.tar.gz" in o
+    assert "ENGINE_READY" in o
+    # Vast injects sshd via runtype=ssh; no sshd/apt in the onstart (the tarball
+    # install is exactly what let us drop apt-get git and its slow-mirror stall).
+    assert "sshd" not in o and "apt-get" not in o
+
+
+def test_runpod_onstart_starts_sshd_authorizes_key_and_holds_open():
+    pub = "ssh-ed25519 AAAAUNIQUEKEY42 user@host"
+    o = C._runpod_onstart(pub)
+    assert "openssh-server" in o and "/usr/sbin/sshd" in o
+    assert f"'{pub}'" in o                              # authorized, shell-quoted
+    assert "jax-morpho @" in o and "ENGINE_READY" in o
+    assert o.rstrip().endswith("sleep infinity")        # keep container + sshd alive
+
+
+def test_runpod_onstart_shell_quotes_key_safely():
+    # A pathological "key" with shell metachars must not break out of the echo.
+    o = C._runpod_onstart("evil'; rm -rf / #")
+    assert "rm -rf /" in o                               # present only inside the quote
+    assert "'evil'\"'\"'; rm -rf / #'" in o              # shlex.quote form
+
+
+def test_read_pubkey(tmp_path):
+    key = tmp_path / "id"
+    (tmp_path / "id.pub").write_text("ssh-ed25519 AAAAKEY x\n")
+    assert C._read_pubkey(str(key)) == "ssh-ed25519 AAAAKEY x"
+    with pytest.raises(FileNotFoundError):
+        C._read_pubkey(str(tmp_path / "missing"))
+
+
+class _DummyHost:
+    id = "h1"
+    ssh_host = "1.2.3.4"
+    ssh_port = 22
+
+
+def _fast_fail(**kw):
+    from run_farm import LaunchSpec
+    launch = LaunchSpec(image="python:3.11-slim", onstart="x", label="t")
+    return C.FastFailExecutor(object(), "jax_morpho.runfns:evodevo_run", launch,
+                              config_class=C.CONFIG_CLASS_REF, **kw)
+
+
+def test_fast_fail_ssh_dead_fails_over_within_grace(monkeypatch):
+    monkeypatch.setattr(C.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(C, "_ssh", lambda *a, **k: (255, "connect refused"))
+    ex = _fast_fail(ssh_grace=0.05, ready_timeout=5.0)
+    with pytest.raises(C.HostProbeFailed, match="SSH never reachable"):
+        ex._wait_engine_ready(_DummyHost())
+
+
+def test_fast_fail_engine_install_times_out(monkeypatch):
+    monkeypatch.setattr(C.time, "sleep", lambda *_: None)
+
+    def fake_ssh(key, host, port, cmd, timeout=30):     # SSH up, import never succeeds
+        return (0, "OK") if "echo OK" in cmd else (1, "ModuleNotFoundError")
+
+    monkeypatch.setattr(C, "_ssh", fake_ssh)
+    ex = _fast_fail(ssh_grace=5.0, ready_timeout=0.05)
+    with pytest.raises(C.HostProbeFailed, match="engine not ready"):
+        ex._wait_engine_ready(_DummyHost())
+
+
+def test_fast_fail_returns_when_engine_imports(monkeypatch):
+    monkeypatch.setattr(C.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(C, "_ssh", lambda *a, **k: (0, "OK"))    # everything succeeds
+    ex = _fast_fail(ssh_grace=5.0, ready_timeout=5.0)
+    assert ex._wait_engine_ready(_DummyHost()) is None          # no raise = ready
+
+
+def _patch_providers(monkeypatch, recorded):
+    import run_farm
+
+    class FakeRunPod:
+        def __init__(self, *a, ledger=None, cloud_type=None, interruptible=None, **k):
+            recorded["cloud_type"] = cloud_type
+            recorded["interruptible"] = interruptible
+
+    class FakeVast:
+        def __init__(self, *a, ledger=None, **k):
+            recorded["vast"] = True
+
+    monkeypatch.setattr(run_farm, "RentalLedger", lambda *a, **k: object())
+    monkeypatch.setattr(run_farm, "RunPodProvider", FakeRunPod)
+    monkeypatch.setattr(run_farm, "VastProvider", FakeVast)
+    monkeypatch.setattr(run_farm, "CappedProvider", lambda base, cap, ledger: base)
+
+
+def test_build_fleet_runpod_uses_sshd_onstart_and_secure(tmp_path, monkeypatch):
+    (tmp_path / "id.pub").write_text("ssh-ed25519 AAAAKEY x\n")
+    rec = {}
+    _patch_providers(monkeypatch, rec)
+    args = _fleet_args(provider="runpod", ssh_key=str(tmp_path / "id"),
+                       out=str(tmp_path))
+    _prov, launch, executor, configs = C._build_fleet(SPEC, args)
+    assert "/usr/sbin/sshd" in launch.onstart            # sshd bootstrap chosen
+    assert "'ssh-ed25519 AAAAKEY x'" in launch.onstart   # our key authorized
+    assert rec["cloud_type"] == "SECURE" and rec["interruptible"] is False
+    assert isinstance(executor, C.FastFailExecutor)
+    assert executor.remote_work_dir == C._REMOTE_WORK_DIR
+    assert executor.ssh_grace == args.ssh_grace
+    assert len(configs) == 3                             # SPEC: point×2 + mu×1
+
+
+def test_build_fleet_vast_uses_plain_onstart(tmp_path, monkeypatch):
+    rec = {}
+    _patch_providers(monkeypatch, rec)
+    args = _fleet_args(provider="vast", out=str(tmp_path))
+    _prov, launch, executor, _configs = C._build_fleet(SPEC, args)
+    assert "/usr/sbin/sshd" not in launch.onstart        # Vast injects sshd itself
+    assert "jax-morpho @" in launch.onstart
+    assert rec.get("vast") is True
+
+
+def test_build_fleet_rejects_unknown_provider(tmp_path, monkeypatch):
+    rec = {}
+    _patch_providers(monkeypatch, rec)
+    args = _fleet_args(provider="gcp", out=str(tmp_path))
+    with pytest.raises(ValueError, match="unknown provider"):
+        C._build_fleet(SPEC, args)
+
+
+def test_fast_fail_clamps_probe_timeout_to_remaining_budget(monkeypatch):
+    # Regression: a probe's wall-timeout must be clamped to the time left, so a
+    # dead host fails over within the budget instead of budget + a full 15s/30s probe.
+    monkeypatch.setattr(C.time, "sleep", lambda *_: None)
+    seen = []
+
+    def rec_ssh(key, host, port, cmd, timeout=30):
+        seen.append(timeout)
+        return (255, "refused")
+
+    monkeypatch.setattr(C, "_ssh", rec_ssh)
+    ex = _fast_fail(ssh_grace=0.05, ready_timeout=5.0)
+    with pytest.raises(C.HostProbeFailed, match="SSH never reachable"):
+        ex._wait_engine_ready(_DummyHost())
+    assert seen and all(t <= 0.05 + 1e-9 for t in seen)   # never the 15s probe cap

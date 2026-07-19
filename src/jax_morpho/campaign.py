@@ -29,7 +29,10 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
+import shlex
 import sys
+import time
 from pathlib import Path
 
 # x64 before any array work: the implicit solve + Procrustes readout need it, and
@@ -44,9 +47,14 @@ from run_farm import (
     JsonlEventSink,
     LocalExecutor,
     ProbeAdmission,
+    ProviderExecutor,
     estimate,
     run_campaign,
 )
+# `_ssh` is the same host-probe helper the base ProviderExecutor uses (shared so
+# our fast-fail readiness check keeps run-farm's SSH keepalive/timeout options).
+from run_farm.provider_exec import _ssh
+from run_farm.protocols import HostProbeFailed
 
 from jax_morpho.farm_config import morpho_leg_to_config
 from jax_morpho.runfns import evodevo_run
@@ -190,13 +198,24 @@ def cmd_local(spec: dict, args) -> int:
     return 0
 
 
-def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardware
-    """Run the campaign over a rented, teardown-verifying, dollar-capped fleet."""
+def _read_pubkey(ssh_key: str) -> str:
+    """The public half of `ssh_key` (`<ssh_key>.pub`), for a provider that must be
+    told which key to authorize (RunPod). Raises with a clear message if absent."""
+    pub = Path(os.path.expanduser(ssh_key + ".pub"))
+    if not pub.exists():
+        raise FileNotFoundError(
+            f"public key {pub} not found — need it to authorize SSH on the rented "
+            f"pod; generate the pair or pass --ssh-key")
+    return pub.read_text().strip()
+
+
+def _build_fleet(spec: dict, args):
+    """Assemble the (capped provider, launch, executor, configs) for a fleet run — the
+    pure wiring, split out so it is unit-testable without renting hardware."""
     from run_farm import (
         CappedProvider,
         HostSpec,
         LaunchSpec,
-        ProviderExecutor,
         RentalLedger,
         RunPodProvider,
         VastProvider,
@@ -204,25 +223,44 @@ def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardw
 
     ledger = RentalLedger(args.ledger)
     if args.provider == "vast":
+        # Vast injects sshd via runtype=ssh; the onstart only installs the engine.
         base = VastProvider(ledger=ledger)
+        onstart = _vast_onstart()
     elif args.provider == "runpod":
-        base = RunPodProvider(ledger=ledger, interruptible=True)
+        # RunPod runs the onstart as the pod's main process and injects no sshd, so the
+        # onstart starts its own and authorizes the campaign key. SECURE (datacenter)
+        # on-demand pods have reliable SSH — the flaky-proxy failure Vast community hosts
+        # show does not occur — so this is the default tier.
+        base = RunPodProvider(ledger=ledger, cloud_type=args.cloud_type.upper(),
+                              interruptible=False)
+        onstart = _runpod_onstart(_read_pubkey(args.ssh_key))
     else:
-        print(f"unknown provider: {args.provider}", file=sys.stderr)
-        return 2
+        raise ValueError(f"unknown provider: {args.provider}")
     provider = CappedProvider(base, args.cap_usd, ledger)   # refuses to overspend
 
-    launch = LaunchSpec(image=args.image, onstart=_ONSTART,
+    launch = LaunchSpec(image=args.image, onstart=onstart,
                         label=spec.get("gtag", "morpho-campaign"))
     host_spec = HostSpec(gpu_name=args.gpu, max_dph=args.max_dph, min_cuda=0.0)
-    executor = ProviderExecutor(
+    executor = FastFailExecutor(
         provider, RUN_FN_REF, launch, host_spec=host_spec,
-        local_work_dir=args.out, config_class=CONFIG_CLASS_REF,
-        # The default image installs the engine system-wide (no venv) and exposes
-        # it as `python`; results sync under /root. Both match _ONSTART below.
-        remote_python="python", remote_work_dir="/root/runs")
+        key_path=args.ssh_key, local_work_dir=args.out,
+        config_class=CONFIG_CLASS_REF,
+        # The default image installs the engine system-wide (no venv) and exposes it as
+        # `python`; results sync under /root/runs. Both match the onstart builders.
+        remote_python="python", remote_work_dir=_REMOTE_WORK_DIR,
+        ssh_grace=args.ssh_grace, ready_timeout=args.ready_timeout,
+        rent_timeout=args.rent_timeout, max_attempts=args.max_attempts)
+    return provider, launch, executor, plan_configs(spec)
 
-    configs = plan_configs(spec)
+
+def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardware
+    """Run the campaign over a rented, teardown-verifying, dollar-capped fleet."""
+    try:
+        _provider, _launch, executor, configs = _build_fleet(spec, args)
+    except (ValueError, FileNotFoundError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
     print(f"launching {len(configs)} legs on {args.provider} "
           f"(cap ${args.cap_usd:.2f}); ledger -> {args.ledger}")
     try:
@@ -238,31 +276,127 @@ def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardw
     for r in results:
         if r.get("error"):
             print(f"  {r.get('run')}: ERROR {r['error']}")
-    _report_results(args.out, configs)
+    _report_results(args.out, configs, subdir=_REMOTE_RUNS)
     return 0
 
 
-# Bootstrap a rented box: install jax-morpho (which pulls run-farm), then echo the
-# readiness marker the ProviderExecutor probes for. Matched to the default
-# `python:3.11-slim` image (Python 3.11 — the engine's floor — with pip; installing
-# system-wide, so `remote_python="python"` finds it). Verified end-to-end against the
-# worker path (run_farm.remote.run_one) that a booted box runs. GPU-scale evolve
-# campaigns override `--image` with a CUDA + Python-3.11 image and swap the pip line
-# for `'jax[cuda12]' 'jax-morpho[scale] @ git+...'`.
-_ONSTART = r"""#!/bin/bash
-set -e
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq git >/dev/null
-pip install -q "jax-morpho @ git+https://github.com/JimGalasyn/jax-morpho.git"
-echo "ENGINE_READY"
-"""
+# The synced-artifacts subdir. The worker writes DONE.json/checkpoints under
+# `/root/{_REMOTE_RUNS}/<run>/`; `_sync_back` scp's that whole dir DOWN, so locally
+# they land under `<out>/{_REMOTE_RUNS}/<run>/` — which `_report_results` must match.
+_REMOTE_RUNS = "runs"
+_REMOTE_WORK_DIR = f"/root/{_REMOTE_RUNS}"
+
+# Install jax-morpho from the GitHub **tarball**, not `git+https`: pip fetches and builds
+# it with no `git` binary, so the box needs no `apt-get install git` — and thus no
+# `apt-get update`, whose slow Debian mirrors were the bootstrap's dominant cost (measured
+# 2026-07-19: apt alone burned most of the 900s ready-timeout on marginal Vast hosts,
+# forcing failover). The engine's deps (run-farm, jax, numpy, scipy) all resolve from
+# PyPI, so the tarball is the only non-PyPI fetch. `main.tar.gz` tracks the default
+# branch; pin `.../archive/refs/tags/vX.Y.Z.tar.gz` for a reproducible campaign. GPU-scale
+# evolve campaigns override `--image` with a CUDA + Python-3.11 image and prepend
+# `pip install 'jax[cuda12]'` (then `jax-morpho[scale] @ .../main.tar.gz`).
+_INSTALL = ('pip install -q "jax-morpho @ '
+            'https://github.com/JimGalasyn/jax-morpho/archive/refs/heads/main.tar.gz"')
 
 
-def _report_results(out: str, configs) -> None:
+def _vast_onstart() -> str:
+    """Vast bootstrap. Vast's `runtype=ssh` injects its OWN sshd/proxy and keeps the
+    container alive, so the onstart only needs to install the engine and echo the
+    readiness marker `ProviderExecutor` probes for. Matched to `python:3.11-slim`
+    (Python 3.11, the engine's floor; system-wide install, so `remote_python=python`)."""
+    return f"#!/bin/bash\nset -e\n{_INSTALL}\necho ENGINE_READY\n"
+
+
+def _runpod_onstart(pubkey: str) -> str:
+    """RunPod bootstrap. Unlike Vast, RunPod runs THIS script as the pod's main process
+    (`dockerStartCmd`) and maps container port 22 to a public port — it does NOT inject
+    an sshd. So a bare image (`python:3.11-slim`, no sshd) is unreachable unless the
+    onstart starts its own. We apt-install openssh (RunPod-datacenter mirrors are fast,
+    so this is cheap — the Vast apt problem was community-host mirrors), authorize the
+    campaign key (`--ssh-key`'s public half; RunPod does not inject account keys once the
+    start command is overridden), start sshd, install the engine, and `sleep infinity` so
+    the container — and thus sshd — stays up for the whole campaign (without it the script
+    exits, PID 1 dies, and the pod is torn down mid-run)."""
+    return (
+        "#!/bin/bash\n"
+        "set -e\n"
+        "export DEBIAN_FRONTEND=noninteractive\n"
+        "apt-get update -qq\n"
+        "apt-get install -y -qq openssh-server >/dev/null\n"
+        "mkdir -p /run/sshd /root/.ssh\n"
+        f"echo {shlex.quote(pubkey)} > /root/.ssh/authorized_keys\n"
+        "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys\n"
+        "ssh-keygen -A >/dev/null 2>&1 || true\n"
+        "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' "
+        "/etc/ssh/sshd_config\n"
+        "/usr/sbin/sshd\n"
+        f"{_INSTALL}\n"
+        "echo ENGINE_READY\n"
+        "sleep infinity\n"
+    )
+
+
+class FastFailExecutor(ProviderExecutor):
+    """A `ProviderExecutor` that fails a dead host over in `ssh_grace` seconds instead of
+    burning the full `ready_timeout` on it.
+
+    The base `_wait_engine_ready` cannot tell "SSH refused, host is dead" from "SSH works,
+    engine still installing" — both are a non-zero probe — so a host whose SSH never comes
+    up (a flaky Vast proxy that never wires; ~half the marketplace in a bad window) costs
+    the whole `ready_timeout` before failover. We split the wait: SSH must answer within
+    `ssh_grace` (else fail over now), and only then does the engine-install poll get the
+    full `ready_timeout`. Pair with a tight `rent_timeout` so a host stuck provisioning
+    (never reaches "running") also fails fast."""
+
+    def __init__(self, *args, ssh_grace: float = 150.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ssh_grace = ssh_grace
+
+    def _wait_engine_ready(self, host) -> None:
+        # Phase 1: SSH reachability. Refused-and-refused-again => dead host, fail over.
+        if not self._poll_until(host, "echo OK", self.ssh_grace,
+                                probe_cap=15.0, sleep_cap=8.0):
+            raise HostProbeFailed(
+                f"SSH never reachable on {host.id} within {self.ssh_grace:.0f}s "
+                f"({host.ssh_host}:{host.ssh_port}) -> failover")
+        # Phase 2: engine install (import the RunFn's module) within ready_timeout.
+        check = f"{self.remote_python} -c 'import {self.engine_module}'"
+        if not self._poll_until(host, check, self.ready_timeout,
+                                probe_cap=30.0, sleep_cap=10.0):
+            raise HostProbeFailed(
+                f"engine not ready on {host.id} within {self.ready_timeout:.0f}s: "
+                f"{self._last_probe_out[-200:]}")
+
+    def _poll_until(self, host, cmd: str, budget: float, *, probe_cap: float,
+                    sleep_cap: float) -> bool:
+        """Poll `cmd` over SSH until it exits 0 or `budget` seconds elapse; True on
+        success. Each probe's wall-timeout AND the backoff sleep are clamped to the
+        time remaining, so a never-ready host fails over within ~`budget` (not
+        `budget` + one full probe + one full sleep) — the point of the fast-fail
+        split. Stashes the last output for the caller's error message."""
+        deadline = time.monotonic() + budget
+        self._last_probe_out = ""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            rc, out = _ssh(self.key_path, host.ssh_host, host.ssh_port, cmd,
+                           timeout=min(probe_cap, remaining))
+            if rc == 0:
+                return True
+            self._last_probe_out = out
+            time.sleep(min(sleep_cap, max(0.0, deadline - time.monotonic())))
+
+
+def _report_results(out: str, configs, subdir: str = "") -> None:
     """Print each run's DONE.json summary — and, for the M-U arm, whether its
-    known-answer gate passed (the validation that traveled with the campaign)."""
-    base = Path(out)
+    known-answer gate passed (the validation that traveled with the campaign).
+
+    `local` writes DONE.json to `<out>/<run>/`; the fleet path scp's the box's
+    `/root/runs` dir down, so its artifacts land under `<out>/runs/<run>/` — pass
+    `subdir="runs"` (i.e. `_REMOTE_RUNS`) so a *successful* fleet run isn't misreported
+    as "(no result)". `subdir=""` (local) preserves the original layout."""
+    base = Path(out) / subdir
     for c in configs:
         done = base / c.run_name() / "DONE.json"
         if not done.exists():
@@ -300,6 +434,23 @@ def build_parser() -> argparse.ArgumentParser:
                     help="hard dollar ceiling; renting past it is refused")
     pf.add_argument("--gpu", default="RTX_3090", help="HostSpec.gpu_name")
     pf.add_argument("--max-dph", type=float, default=0.40, help="$/hr ceiling per host")
+    # RunPod only: SECURE = datacenter, reliable SSH (the default, so a first fleet run
+    # just works); COMMUNITY is cheaper but has the flaky-SSH tail Vast community shows.
+    pf.add_argument("--cloud-type", choices=["secure", "community"], default="secure",
+                    help="RunPod tier (ignored for vast)")
+    # The SSH key the executor connects with. For RunPod its PUBLIC half (<key>.pub) is
+    # authorized on the pod by the onstart; for Vast the key must be registered with Vast.
+    pf.add_argument("--ssh-key", default="~/.ssh/vastai",
+                    help="private key path; <key>.pub is authorized on RunPod pods")
+    # Fast-fail knobs: SSH must answer within --ssh-grace or the host is dead (fail over);
+    # once up, the engine install gets --ready-timeout; --rent-timeout bounds provisioning
+    # (a host stuck 'loading' past it fails over too). Defaults tuned on Vast 2026-07-19.
+    pf.add_argument("--ssh-grace", type=float, default=150.0)
+    pf.add_argument("--ready-timeout", type=float, default=480.0)
+    pf.add_argument("--rent-timeout", type=float, default=240.0)
+    pf.add_argument("--max-attempts", type=int, default=20,
+                    help="offers to walk before giving up (cheap now that dead hosts "
+                         "fail fast)")
     # Python 3.11 (the engine's floor) + pip, no CUDA hook (so no nvidia-container
     # create failures). Override with a CUDA + py3.11 image for GPU-scale campaigns.
     pf.add_argument("--image", default="python:3.11-slim")
