@@ -1,0 +1,16 @@
+# Canonical identities for git log / shortlog / blame.
+#
+# Commits made from a work machine picked up jim.galasyn@confluent.io from a global
+# ~/.gitconfig (6 of 9 commits here). This repo now carries a repo-local
+# user.email, so it cannot recur. The affected commits are already pushed, so a
+# mailmap is used rather than a history rewrite: rewriting would change every SHA
+# from the first affected commit forward and break existing clones, to remove an
+# address that remains recoverable from GitHub's event history regardless.
+#
+# The author name also appears both as "Jim" and as "Jim Galasyn"; both are mapped
+# to one canonical form.
+#
+# Format: Proper Name <proper@email> <commit@email>
+
+Jim Galasyn <jim.galasyn@hotmail.com> <jim.galasyn@confluent.io>
+Jim Galasyn <jim.galasyn@hotmail.com> <jim.galasyn@hotmail.com>
