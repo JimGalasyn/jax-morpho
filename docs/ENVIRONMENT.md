@@ -116,7 +116,7 @@ with Dirichlet boundaries:
 - **mechanical load `σ_ext`** — an external potential term; the only one that
   enters the *force law* rather than only the readout.
 
-`Morphospace/morphospace/physics/k7_transport.py`'s `MorphogenField` — explicit
+`Morphospace/morphospace/protocell/transport.py`'s `MorphogenField` — explicit
 `source_cells`/`sink_cells` with values and `apply_boundary_conditions()` — is
 the right abstraction and should be copied in shape. It is **numpy with
 string-keyed cell identity (`cell_aas`) load-bearing all the way down**, so it is
