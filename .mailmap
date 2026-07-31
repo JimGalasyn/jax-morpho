@@ -1,14 +1,27 @@
 # Canonical identities for git log / shortlog / blame.
 #
 # Commits made from a work machine picked up jim.galasyn@confluent.io from a global
-# ~/.gitconfig (6 of 9 commits here). This repo now carries a repo-local
-# user.email, so it cannot recur. The affected commits are already pushed, so a
-# mailmap is used rather than a history rewrite: rewriting would change every SHA
-# from the first affected commit forward and break existing clones, to remove an
-# address that remains recoverable from GitHub's event history regardless.
+# ~/.gitconfig (6 of 11 commits here, as of 2026-07-31). The affected commits are
+# already pushed, so a mailmap is used rather than a history rewrite: rewriting would
+# change every SHA from the first affected commit forward and break existing clones,
+# to remove an address that remains recoverable from GitHub's event history regardless.
+#
+# It cannot recur, but NOT for the reason this comment used to give (a repo-local
+# user.email). The guard is a conditional include at the end of ~/.gitconfig:
+#
+#   [includeIf "hasconfig:remote.*.url:https://github.com/JimGalasyn/**"]
+#           path = ~/.gitconfig-personal
+#
+# which is keyed on the REMOTE URL rather than on a path or a checkout, so the personal
+# identity attaches to any clone of this repo anywhere on disk — the case repo-local
+# user.email missed, since a fresh clone starts without one. Verified: `git config
+# user.email` here resolves to the personal address with no repo-local setting present.
 #
 # The author name also appears both as "Jim" and as "Jim Galasyn"; both are mapped
 # to one canonical form.
+#
+# Counts above are a snapshot; recompute with
+#   git log --format='%an <%ae>' | sort | uniq -c
 #
 # Format: Proper Name <proper@email> <commit@email>
 
