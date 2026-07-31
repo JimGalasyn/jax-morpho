@@ -1,14 +1,32 @@
 # Canonical identities for git log / shortlog / blame.
 #
 # Commits made from a work machine picked up jim.galasyn@confluent.io from a global
-# ~/.gitconfig (6 of 9 commits here). This repo now carries a repo-local
-# user.email, so it cannot recur. The affected commits are already pushed, so a
-# mailmap is used rather than a history rewrite: rewriting would change every SHA
-# from the first affected commit forward and break existing clones, to remove an
-# address that remains recoverable from GitHub's event history regardless.
+# ~/.gitconfig (6 of 12 commits here, as of 2026-07-31). The affected commits are
+# already pushed, so a mailmap is used rather than a history rewrite: rewriting would
+# change every SHA from the first affected commit forward and break existing clones,
+# to remove an address that remains recoverable from GitHub's event history regardless.
+#
+# The reason this comment used to give for why it cannot recur — a repo-local
+# user.email — is wrong: this repo has never carried one. The guard lives in each
+# machine's ~/.gitconfig, and it is NOT the same on every machine:
+#
+#   - work machine: a conditional include keyed on the REMOTE URL, so the personal
+#     identity attaches to any clone of this repo anywhere on disk —
+#       [includeIf "hasconfig:remote.*.url:https://github.com/JimGalasyn/**"]
+#               path = ~/.gitconfig-personal
+#   - Bender (verified 2026-07-31): no conditional include and no ~/.gitconfig-personal;
+#     the global user.email is simply the personal address, and the work address is not
+#     configured at all.
+#
+# Both survive a fresh clone, which repo-local user.email would not. But both are
+# per-machine: the repo cannot enforce either, so a new machine is unguarded until it
+# is set up. Check `git config user.email` there before the first commit.
 #
 # The author name also appears both as "Jim" and as "Jim Galasyn"; both are mapped
 # to one canonical form.
+#
+# Counts above are a snapshot; recompute with
+#   git log --format='%an <%ae>' | sort | uniq -c
 #
 # Format: Proper Name <proper@email> <commit@email>
 
