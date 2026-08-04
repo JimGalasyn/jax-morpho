@@ -376,3 +376,28 @@ def test_provenance_never_overwrites_a_measurement():
     out = runfns.evodevo_run(cfg, _Ctx())
     assert out["kind"] == "mu_gate"              # the measurement survives
     assert "env" in out and out["env"]["backend"]
+
+
+# ------------------------------------------------------------------ cuda ----
+def test_cuda_install_precedes_the_engine():
+    """Order is the whole point. jax-morpho depends on plain `jax`, so installing the
+    engine first pulls the CPU wheel and the box then computes on CPU while looking,
+    from the driver's side, exactly like a successful GPU campaign."""
+    block = C._install_block(cuda=True)
+    assert block.index("jax[cuda12]") < block.index("jax-morpho @")
+
+
+def test_no_cuda_flag_leaves_the_bootstrap_unchanged():
+    assert C._install_block(cuda=False) == C._INSTALL
+    assert "cuda12" not in C._install_block(cuda=False)
+
+
+@pytest.mark.parametrize("builder,args", [
+    (lambda cuda: C._vast_onstart(cuda=cuda), ()),
+    (lambda cuda: C._runpod_onstart("ssh-ed25519 AAAA test", cuda=cuda), ()),
+])
+def test_both_providers_honour_cuda(builder, args):
+    assert "jax[cuda12]" in builder(True)
+    assert "jax[cuda12]" not in builder(False)
+    # Readiness marker must survive either way, or the probe never sees the box up.
+    assert "ENGINE_READY" in builder(True)

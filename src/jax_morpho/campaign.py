@@ -226,7 +226,7 @@ def _build_fleet(spec: dict, args):
     if args.provider == "vast":
         # Vast injects sshd via runtype=ssh; the onstart only installs the engine.
         base = VastProvider(ledger=ledger)
-        onstart = _vast_onstart()
+        onstart = _vast_onstart(cuda=getattr(args, 'cuda', False))
     elif args.provider == "runpod":
         # RunPod runs the onstart as the pod's main process and injects no sshd, so the
         # onstart starts its own and authorizes the campaign key. SECURE (datacenter)
@@ -234,7 +234,8 @@ def _build_fleet(spec: dict, args):
         # show does not occur — so this is the default tier.
         base = RunPodProvider(ledger=ledger, cloud_type=args.cloud_type.upper(),
                               interruptible=False)
-        onstart = _runpod_onstart(_read_pubkey(args.ssh_key))
+        onstart = _runpod_onstart(_read_pubkey(args.ssh_key),
+                                  cuda=getattr(args, 'cuda', False))
     else:
         raise ValueError(f"unknown provider: {args.provider}")
     provider = CappedProvider(base, args.cap_usd, ledger)   # refuses to overspend
@@ -313,6 +314,17 @@ _REMOTE_WORK_DIR = f"/root/{_REMOTE_RUNS}"
 _INSTALL = ('pip install -q "jax-morpho @ '
             'https://github.com/JimGalasyn/jax-morpho/archive/refs/heads/main.tar.gz"')
 
+# CUDA wheels, installed BEFORE the engine. Order matters: jax-morpho depends on plain
+# `jax`, so installing it first pulls the CPU wheel and the box then computes on CPU while
+# looking, from the driver's side, exactly like a successful GPU campaign. That is the
+# failure this exists to prevent -- and it is why `--cuda` is a flag rather than a comment
+# telling the next person to hand-edit the onstart (which is what this file said before).
+_CUDA_INSTALL = 'pip install -q "jax[cuda12]"'
+
+
+def _install_block(cuda: bool) -> str:
+    return f"{_CUDA_INSTALL}\n{_INSTALL}" if cuda else _INSTALL
+
 
 # Pinned by default rather than opt-in. Measured on a Morphospace lineage at campaign
 # scale (pop 200 x 200 generations): with autotuning left on, a resume in a separate
@@ -344,15 +356,15 @@ def resolve_remote_env(pairs: list[str] | None) -> dict[str, str]:
     return out
 
 
-def _vast_onstart() -> str:
+def _vast_onstart(cuda: bool = False) -> str:
     """Vast bootstrap. Vast's `runtype=ssh` injects its OWN sshd/proxy and keeps the
     container alive, so the onstart only needs to install the engine and echo the
     readiness marker `ProviderExecutor` probes for. Matched to `python:3.11-slim`
     (Python 3.11, the engine's floor; system-wide install, so `remote_python=python`)."""
-    return f"#!/bin/bash\nset -e\n{_INSTALL}\necho ENGINE_READY\n"
+    return f"#!/bin/bash\nset -e\n{_install_block(cuda)}\necho ENGINE_READY\n"
 
 
-def _runpod_onstart(pubkey: str) -> str:
+def _runpod_onstart(pubkey: str, cuda: bool = False) -> str:
     """RunPod bootstrap. Unlike Vast, RunPod runs THIS script as the pod's main process
     (`dockerStartCmd`) and maps container port 22 to a public port — it does NOT inject
     an sshd. So a bare image (`python:3.11-slim`, no sshd) is unreachable unless the
@@ -375,7 +387,7 @@ def _runpod_onstart(pubkey: str) -> str:
         "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' "
         "/etc/ssh/sshd_config\n"
         "/usr/sbin/sshd\n"
-        f"{_INSTALL}\n"
+        f"{_install_block(cuda)}\n"
         "echo ENGINE_READY\n"
         "sleep infinity\n"
     )
@@ -510,6 +522,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Python 3.11 (the engine's floor) + pip, no CUDA hook (so no nvidia-container
     # create failures). Override with a CUDA + py3.11 image for GPU-scale campaigns.
     pf.add_argument("--image", default="python:3.11-slim")
+    # Install CUDA jax wheels before the engine. Needed because jax-morpho depends on
+    # plain `jax`: without this the box silently computes on CPU while looking, from
+    # here, exactly like a successful GPU campaign. Pair with a CUDA-capable --image.
+    pf.add_argument("--cuda", action="store_true",
+                    help="pip install jax[cuda12] on the box before the engine")
     pf.add_argument("--ledger", default="campaign_out/ledger.jsonl")
     pf.add_argument("--out", default="campaign_out")
     return p
