@@ -8,3 +8,7 @@ dist/
 build/
 .coverage
 coverage.xml
+
+# Fleet campaign artifacts: rental ledgers, checkpoints and synced results.
+# Run output, not source — and a ledger carries pod ids and host addresses.
+campaign_out/
