@@ -53,6 +53,7 @@ from run_farm import (
 )
 # `_ssh` is the same host-probe helper the base ProviderExecutor uses (shared so
 # our fast-fail readiness check keeps run-farm's SSH keepalive/timeout options).
+from run_farm.gauntlet import GauntletError, RemoteEnvPinned, require_gauntlet
 from run_farm.provider_exec import _ssh
 from run_farm.protocols import HostProbeFailed
 
@@ -248,6 +249,7 @@ def _build_fleet(spec: dict, args):
         # The default image installs the engine system-wide (no venv) and exposes it as
         # `python`; results sync under /root/runs. Both match the onstart builders.
         remote_python="python", remote_work_dir=_REMOTE_WORK_DIR,
+        remote_env=resolve_remote_env(getattr(args, "remote_env", None)),
         ssh_grace=args.ssh_grace, ready_timeout=args.ready_timeout,
         rent_timeout=args.rent_timeout, max_attempts=args.max_attempts)
     return provider, launch, executor, plan_configs(spec)
@@ -261,8 +263,21 @@ def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardw
         print(str(e), file=sys.stderr)
         return 2
 
+    # Guard the reproducibility promise before anything is rented. Omitting the worker
+    # env is a SILENT defect — every leg still runs and produces plausible numbers, and
+    # only the resume-exactness claim is void — so it deserves a check rather than a
+    # convention. Skipped when the caller explicitly shipped nothing (`--remote-env
+    # none`): a check that requires nothing cannot fail, and would be decoration.
+    if executor.remote_env:
+        try:
+            require_gauntlet([RemoteEnvPinned(executor, executor.remote_env)])
+        except GauntletError:
+            print("\nGAUNTLET FAILED — nothing rented, nothing spent.", file=sys.stderr)
+            return 6
+
     print(f"launching {len(configs)} legs on {args.provider} "
           f"(cap ${args.cap_usd:.2f}); ledger -> {args.ledger}")
+    print(f"worker env: {executor.remote_env or '(none)'}")
     try:
         # A ProviderExecutor is driven DIRECTLY (it registers + runs on the rented
         # box and syncs results back to local_work_dir) — NOT through run_campaign,
@@ -297,6 +312,36 @@ _REMOTE_WORK_DIR = f"/root/{_REMOTE_RUNS}"
 # `pip install 'jax[cuda12]'` (then `jax-morpho[scale] @ .../main.tar.gz`).
 _INSTALL = ('pip install -q "jax-morpho @ '
             'https://github.com/JimGalasyn/jax-morpho/archive/refs/heads/main.tar.gz"')
+
+
+# Pinned by default rather than opt-in. Measured on a Morphospace lineage at campaign
+# scale (pop 200 x 200 generations): with autotuning left on, a resume in a separate
+# process diverged from the uninterrupted run in 1 of 3 attempts, 14587/20000 entries.
+# With this flag, 5/5 identical -- and slightly faster, since tuning kernels this small
+# costs more compile time than it recovers. A campaign that checkpoints is promising
+# resume exactness, so the safe value is the default and looseness is the explicit choice.
+DEFAULT_REMOTE_ENV = {"XLA_FLAGS": "--xla_gpu_autotune_level=0"}
+
+
+def resolve_remote_env(pairs: list[str] | None) -> dict[str, str]:
+    """`--remote-env K=V` (repeatable) -> dict; None -> the determinism default.
+
+    `--remote-env none` ships nothing, so "I want the old behaviour" is sayable and
+    visible in the command line, rather than requiring an edit to this file.
+    """
+    if pairs is None:
+        return dict(DEFAULT_REMOTE_ENV)
+    if len(pairs) == 1 and pairs[0].strip().lower() == "none":
+        return {}
+    out: dict[str, str] = {}
+    for item in pairs:
+        if "=" not in item:
+            raise ValueError(f"--remote-env expects K=V, got {item!r}")
+        k, v = item.split("=", 1)
+        if not k.strip():
+            raise ValueError(f"--remote-env has an empty key: {item!r}")
+        out[k.strip()] = v
+    return out
 
 
 def _vast_onstart() -> str:
@@ -442,6 +487,17 @@ def build_parser() -> argparse.ArgumentParser:
     # authorized on the pod by the onstart; for Vast the key must be registered with Vast.
     pf.add_argument("--ssh-key", default="~/.ssh/vastai",
                     help="private key path; <key>.pub is authorized on RunPod pods")
+    # Variables the worker must see AT PROCESS START. onstart cannot supply them: the
+    # worker arrives over a separate non-interactive `ssh host cmd`, which sources no
+    # profile. XLA_FLAGS is the case that forced this — JAX reads it when the backend
+    # initialises, so setting it from inside a RunFn is already too late, and XLA GPU
+    # autotuning picks kernels per process (a resumed leg is then not bit-identical to
+    # an uninterrupted one). Defaults to pinning autotuning off, because a campaign
+    # that checkpoints is promising resume exactness by default.
+    pf.add_argument("--remote-env", action="append", default=None, metavar="K=V",
+                    help="env var for the worker process; repeatable. Defaults to "
+                         "XLA_FLAGS=--xla_gpu_autotune_level=0; pass --remote-env "
+                         "none to ship nothing.")
     # Fast-fail knobs: SSH must answer within --ssh-grace or the host is dead (fail over);
     # once up, the engine install gets --ready-timeout; --rent-timeout bounds provisioning
     # (a host stuck 'loading' past it fails over too). Defaults tuned on Vast 2026-07-19.

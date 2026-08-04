@@ -296,3 +296,35 @@ def test_fast_fail_clamps_probe_timeout_to_remaining_budget(monkeypatch):
     with pytest.raises(C.HostProbeFailed, match="SSH never reachable"):
         ex._wait_engine_ready(_DummyHost())
     assert seen and all(t <= 0.05 + 1e-9 for t in seen)   # never the 15s probe cap
+
+
+# ------------------------------------------------------------ remote env ----
+# Variables the worker must see AT PROCESS START. onstart cannot supply them (the
+# worker arrives over a non-interactive `ssh host cmd`, which sources no profile),
+# and omitting them is silent: legs run, numbers look fine, only the resume-exactness
+# claim is void.
+
+def test_remote_env_defaults_to_pinning_autotune():
+    """A campaign that checkpoints promises resume exactness, so the safe value is
+    the default rather than an opt-in someone has to know to ask for."""
+    assert C.resolve_remote_env(None) == {"XLA_FLAGS": "--xla_gpu_autotune_level=0"}
+
+
+def test_remote_env_none_ships_nothing():
+    """'I want the old behaviour' must be sayable on the command line, and visible
+    there, rather than requiring an edit to the source."""
+    assert C.resolve_remote_env(["none"]) == {}
+    assert C.resolve_remote_env(["NONE"]) == {}
+
+
+def test_remote_env_keeps_values_containing_equals_and_spaces():
+    """XLA_FLAGS is a space-separated list of --k=v; splitting on every '=' would
+    silently truncate it to the first flag."""
+    assert C.resolve_remote_env(["A=1", "XLA_FLAGS=--x=0 --y=1"]) == {
+        "A": "1", "XLA_FLAGS": "--x=0 --y=1"}
+
+
+@pytest.mark.parametrize("bad", ["novalue", "=1"])
+def test_remote_env_rejects_malformed(bad):
+    with pytest.raises(ValueError):
+        C.resolve_remote_env([bad])
