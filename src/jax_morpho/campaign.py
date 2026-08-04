@@ -226,7 +226,8 @@ def _build_fleet(spec: dict, args):
     if args.provider == "vast":
         # Vast injects sshd via runtype=ssh; the onstart only installs the engine.
         base = VastProvider(ledger=ledger)
-        onstart = _vast_onstart(cuda=getattr(args, 'cuda', False))
+        onstart = _vast_onstart(cuda=getattr(args, 'cuda', False),
+                                python=getattr(args, "remote_python", "python"))
     elif args.provider == "runpod":
         # RunPod runs the onstart as the pod's main process and injects no sshd, so the
         # onstart starts its own and authorizes the campaign key. SECURE (datacenter)
@@ -235,7 +236,8 @@ def _build_fleet(spec: dict, args):
         base = RunPodProvider(ledger=ledger, cloud_type=args.cloud_type.upper(),
                               interruptible=False)
         onstart = _runpod_onstart(_read_pubkey(args.ssh_key),
-                                  cuda=getattr(args, 'cuda', False))
+                                  cuda=getattr(args, 'cuda', False),
+                                  python=getattr(args, "remote_python", "python"))
     else:
         raise ValueError(f"unknown provider: {args.provider}")
     provider = CappedProvider(base, args.cap_usd, ledger)   # refuses to overspend
@@ -249,7 +251,8 @@ def _build_fleet(spec: dict, args):
         config_class=CONFIG_CLASS_REF,
         # The default image installs the engine system-wide (no venv) and exposes it as
         # `python`; results sync under /root/runs. Both match the onstart builders.
-        remote_python="python", remote_work_dir=_REMOTE_WORK_DIR,
+        remote_python=getattr(args, "remote_python", "python"),
+        remote_work_dir=_REMOTE_WORK_DIR,
         remote_env=resolve_remote_env(getattr(args, "remote_env", None)),
         ssh_grace=args.ssh_grace, ready_timeout=args.ready_timeout,
         rent_timeout=args.rent_timeout, max_attempts=args.max_attempts)
@@ -322,8 +325,29 @@ _INSTALL = ('pip install -q "jax-morpho @ '
 _CUDA_INSTALL = 'pip install -q "jax[cuda12]"'
 
 
-def _install_block(cuda: bool) -> str:
-    return f"{_CUDA_INSTALL}\n{_INSTALL}" if cuda else _INSTALL
+def _install_block(cuda: bool, python: str = "python") -> str:
+    """Install into the SAME interpreter the worker will be run with.
+
+    `{python} -m pip`, never bare `pip`, and the caller passes the same string it
+    gives `remote_python`. Two failures forced this, both seen live on 2026-08-04
+    with `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`:
+
+    1. **Bare `pip` need not exist.** That image keeps its interpreter in
+       /opt/conda/bin, which a non-interactive `bash -c` does not have on PATH, so
+       `pip install` died with `command not found`. `set -e` then aborted the onstart
+       -- but AFTER sshd had started, so the box was SSH-reachable, looked healthy,
+       and was permanently useless. It burns the whole ready_timeout before failover
+       (the ~9x cost asymmetry provider_exec documents).
+    2. **Even where `pip` exists it can belong to a different interpreter** than the
+       one the worker runs, so the engine installs somewhere `python -m run_farm.worker`
+       cannot see. Deriving both from one string makes that unrepresentable rather
+       than merely unlikely.
+    """
+    engine = _INSTALL.replace("pip install", f"{python} -m pip install", 1)
+    if not cuda:
+        return engine
+    cuda_line = _CUDA_INSTALL.replace("pip install", f"{python} -m pip install", 1)
+    return f"{cuda_line}\n{engine}"
 
 
 # Pinned by default rather than opt-in. Measured on a Morphospace lineage at campaign
@@ -356,15 +380,16 @@ def resolve_remote_env(pairs: list[str] | None) -> dict[str, str]:
     return out
 
 
-def _vast_onstart(cuda: bool = False) -> str:
+def _vast_onstart(cuda: bool = False, python: str = "python") -> str:
     """Vast bootstrap. Vast's `runtype=ssh` injects its OWN sshd/proxy and keeps the
     container alive, so the onstart only needs to install the engine and echo the
     readiness marker `ProviderExecutor` probes for. Matched to `python:3.11-slim`
     (Python 3.11, the engine's floor; system-wide install, so `remote_python=python`)."""
-    return f"#!/bin/bash\nset -e\n{_install_block(cuda)}\necho ENGINE_READY\n"
+    return f"#!/bin/bash\nset -e\n{_install_block(cuda, python)}\necho ENGINE_READY\n"
 
 
-def _runpod_onstart(pubkey: str, cuda: bool = False) -> str:
+def _runpod_onstart(pubkey: str, cuda: bool = False,
+                    python: str = "python") -> str:
     """RunPod bootstrap. Unlike Vast, RunPod runs THIS script as the pod's main process
     (`dockerStartCmd`) and maps container port 22 to a public port — it does NOT inject
     an sshd. So a bare image (`python:3.11-slim`, no sshd) is unreachable unless the
@@ -387,7 +412,7 @@ def _runpod_onstart(pubkey: str, cuda: bool = False) -> str:
         "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' "
         "/etc/ssh/sshd_config\n"
         "/usr/sbin/sshd\n"
-        f"{_install_block(cuda)}\n"
+        f"{_install_block(cuda, python)}\n"
         "echo ENGINE_READY\n"
         "sleep infinity\n"
     )
@@ -527,6 +552,15 @@ def build_parser() -> argparse.ArgumentParser:
     # here, exactly like a successful GPU campaign. Pair with a CUDA-capable --image.
     pf.add_argument("--cuda", action="store_true",
                     help="pip install jax[cuda12] on the box before the engine")
+    # The interpreter that BOTH installs the engine and runs the worker. One string,
+    # so the engine cannot land in a python the worker never looks at. CUDA images
+    # usually need it: pytorch/* keeps python in /opt/conda/bin, which a
+    # non-interactive `bash -c` does not have on PATH -- bare `pip` there is
+    # `command not found`, and `set -e` kills the onstart AFTER sshd is up, leaving a
+    # reachable box that can never become ready.
+    pf.add_argument("--remote-python", default="python",
+                    help="interpreter on the box, for install AND worker "
+                         "(e.g. /opt/conda/bin/python on pytorch images)")
     pf.add_argument("--ledger", default="campaign_out/ledger.jsonl")
     pf.add_argument("--out", default="campaign_out")
     return p

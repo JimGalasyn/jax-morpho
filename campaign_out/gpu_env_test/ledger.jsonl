@@ -1,0 +1,5 @@
+{"dph": 0.27, "event": "rented", "geo": "SECURE", "gpu": "RTX A5000", "instance_id": "0th8f2j8yrlho0", "offer_id": "NVIDIA RTX A5000", "provider": "runpod", "ts": 1785856108.888}
+{"event": "running", "instance_id": "0th8f2j8yrlho0", "offer_id": "NVIDIA RTX A5000", "provider": "runpod", "provision_s": 34.4, "ts": 1785856142.906}
+{"billed_s": 184.4, "destroyed": true, "est_cost_usd": 0.0138, "event": "destroyed", "instance_id": "0th8f2j8yrlho0", "offer_id": "NVIDIA RTX A5000", "outcome": "host_failed", "provider": "runpod", "reason": "SSH never reachable on 0th8f2j8yrlho0 within 150s (69.30.85.188:22091) -> failover", "ts": 1785856299.459, "verify": "gone"}
+{"dph": 0.27, "event": "rented", "geo": "SECURE", "gpu": "RTX A5000", "instance_id": "ljnhkbq3m5dgy6", "offer_id": "NVIDIA RTX A5000", "provider": "runpod", "ts": 1785856353.288}
+{"event": "running", "instance_id": "ljnhkbq3m5dgy6", "offer_id": "NVIDIA RTX A5000", "provider": "runpod", "provision_s": 120.6, "ts": 1785856475.921}

@@ -388,8 +388,12 @@ def test_cuda_install_precedes_the_engine():
 
 
 def test_no_cuda_flag_leaves_the_bootstrap_unchanged():
-    assert C._install_block(cuda=False) == C._INSTALL
-    assert "cuda12" not in C._install_block(cuda=False)
+    block = C._install_block(cuda=False)
+    assert "cuda12" not in block
+    # Same engine install, just invoked through an explicit interpreter.
+    assert block.endswith(C._INSTALL.replace("pip install", "-m pip install", 1)
+                          .lstrip())
+    assert block.count("pip install") == 1
 
 
 @pytest.mark.parametrize("builder,args", [
@@ -401,3 +405,36 @@ def test_both_providers_honour_cuda(builder, args):
     assert "jax[cuda12]" not in builder(False)
     # Readiness marker must survive either way, or the probe never sees the box up.
     assert "ENGINE_READY" in builder(True)
+
+
+# -------------------------------------------------- install/run interpreter ----
+def test_install_uses_the_same_interpreter_the_worker_will_run():
+    """Never bare `pip`. Two live failures on 2026-08-04 forced this.
+
+    On pytorch/pytorch:2.5.1-cuda12.4 the interpreter lives in /opt/conda/bin, which
+    a non-interactive `bash -c` does not have on PATH, so `pip install` was
+    `command not found`; `set -e` then killed the onstart AFTER sshd had started,
+    leaving an SSH-reachable box that could never become ready and burned the whole
+    ready_timeout. And even where `pip` exists it may belong to a different
+    interpreter than the worker's, installing the engine where it is never found.
+    """
+    block = C._install_block(cuda=True, python="/opt/conda/bin/python")
+    assert "pip install" in block
+    assert block.count("/opt/conda/bin/python -m pip install") == 2   # cuda + engine
+    # A bare `pip install` must not survive anywhere in the block.
+    for line in block.splitlines():
+        assert not line.strip().startswith("pip "), line
+
+
+def test_onstart_installs_into_the_configured_interpreter():
+    for build in (lambda: C._vast_onstart(cuda=True, python="/opt/conda/bin/python"),
+                  lambda: C._runpod_onstart("k", cuda=True,
+                                            python="/opt/conda/bin/python")):
+        s = build()
+        assert "/opt/conda/bin/python -m pip install" in s
+        assert "\npip install" not in s
+
+
+def test_default_interpreter_is_still_plain_python():
+    """python:3.11-slim (the default image) has `python` on PATH; don't regress it."""
+    assert "python -m pip install" in C._install_block(cuda=False)
