@@ -328,3 +328,51 @@ def test_remote_env_keeps_values_containing_equals_and_spaces():
 def test_remote_env_rejects_malformed(bad):
     with pytest.raises(ValueError):
         C.resolve_remote_env([bad])
+
+
+# ------------------------------------------------------------ provenance ----
+def test_every_result_records_its_floating_point_environment():
+    """A number without its backend is not reproducible in practice.
+
+    This whole mechanism exists because the same lineage gives different answers in
+    different processes when XLA autotuning is on, and CPU digests differ between
+    machines at identical library versions. A result whose backend and XLA flags were
+    never recorded cannot be compared with a later one except by assuming they match.
+    """
+    from jax_morpho import runfns
+
+    env = runfns._provenance()
+    assert set(env) == {"backend", "device", "jax_version", "xla_flags"}
+    assert env["backend"] in {"cpu", "gpu", "tpu", "unknown"}
+    assert env["jax_version"]
+
+
+def test_provenance_reports_the_xla_flags_actually_in_force(monkeypatch):
+    """The farm sets these via remote_env; the record is how we know they arrived."""
+    from jax_morpho import runfns
+
+    monkeypatch.setenv("XLA_FLAGS", "--xla_gpu_autotune_level=0")
+    assert runfns._provenance()["xla_flags"] == "--xla_gpu_autotune_level=0"
+    monkeypatch.delenv("XLA_FLAGS", raising=False)
+    assert runfns._provenance()["xla_flags"] == ""
+
+
+def test_provenance_never_overwrites_a_measurement():
+    """Nested under 'env' precisely so a future result key named 'backend' cannot
+    silently clobber, or be clobbered by, provenance."""
+    from jax_morpho import runfns
+
+    cfg = RunConfig(kind="mu_gate", n_genes=3, seed=0,
+                    params={"arm": "g", "n_points": 3})
+
+    class _Ctx:
+        resume = None
+        resume_step = None
+
+        def emit(self, row): pass
+        def checkpoint(self, state, step): pass
+        def trigger(self, payload, reason): pass
+
+    out = runfns.evodevo_run(cfg, _Ctx())
+    assert out["kind"] == "mu_gate"              # the measurement survives
+    assert "env" in out and out["env"]["backend"]

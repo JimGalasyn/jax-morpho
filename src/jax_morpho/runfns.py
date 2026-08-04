@@ -30,6 +30,7 @@ silent NaN — the same relax-then-read honesty the soliton RunFn keeps.
 from __future__ import annotations
 
 import hashlib
+import os
 
 import jax
 import jax.numpy as jnp
@@ -247,11 +248,36 @@ def mu_gate(config: RunConfig, ctx: RunContext) -> dict:
     }
 
 
+def _provenance() -> dict:
+    """Which floating-point environment produced this result.
+
+    Recorded because a number without it is not reproducible in practice, and this
+    is not a hypothetical: the same lineage on the same GPU gives different answers
+    in different processes when XLA autotuning is on, and CPU digests differ between
+    machines at identical library versions. A result whose backend and XLA flags were
+    never written down cannot be compared with a later one except by assumption.
+
+    Cheap and total: no computation, and it travels in every record.
+    """
+    try:
+        backend = jax.default_backend()
+        device = str(jax.devices()[0])
+    except Exception:                                        # noqa: BLE001
+        backend, device = "unknown", "unknown"
+    return {"backend": backend, "device": device,
+            "jax_version": jax.__version__,
+            "xla_flags": os.environ.get("XLA_FLAGS", "")}
+
+
 def evodevo_run(config: RunConfig, ctx: RunContext) -> dict:
     """The single injected RunFn for a morpho campaign; dispatches on ``kind``."""
     if config.kind == "evolve":
-        return evolve_lineage(config, ctx)
-    if config.kind == "mu_gate":
-        return mu_gate(config, ctx)
-    raise ValueError(f"unknown run kind: {config.kind!r} "
-                     "(expected 'evolve' or 'mu_gate')")
+        result = evolve_lineage(config, ctx)
+    elif config.kind == "mu_gate":
+        result = mu_gate(config, ctx)
+    else:
+        raise ValueError(f"unknown run kind: {config.kind!r} "
+                         "(expected 'evolve' or 'mu_gate')")
+    # Under `env`, not merged flat: provenance must never collide with a result key
+    # and silently overwrite a measurement.
+    return {**result, "env": _provenance()}
