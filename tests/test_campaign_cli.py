@@ -438,3 +438,48 @@ def test_onstart_installs_into_the_configured_interpreter():
 def test_default_interpreter_is_still_plain_python():
     """python:3.11-slim (the default image) has `python` on PATH; don't regress it."""
     assert "python -m pip install" in C._install_block(cuda=False)
+
+
+# ------------------------------------------------ unreleased-dep import gate ----
+def test_campaign_imports_without_the_unreleased_gauntlet_check(monkeypatch):
+    """`import jax_morpho.campaign` must work against a PUBLISHED run-farm.
+
+    `RemoteEnvPinned` landed after run-farm 0.2.0 and is in no release yet. It was
+    imported at module scope, so importing this module — and therefore collecting
+    this whole test file — died with ImportError on CI, which installs run-farm from
+    PyPI. It passed locally only because run-farm is installed EDITABLE from a
+    checkout: the environment differed from the target in precisely the dependency
+    that mattered.
+
+    Simulated by hiding the symbol, so this fails again if the import moves back to
+    module scope.
+    """
+    import importlib
+
+    import run_farm.gauntlet as g
+
+    monkeypatch.delattr(g, "RemoteEnvPinned", raising=False)
+    mod = importlib.reload(importlib.import_module("jax_morpho.campaign"))
+    assert mod.resolve_remote_env(None)          # module usable without the symbol
+    importlib.reload(mod)                        # restore for the rest of the session
+
+
+def test_the_env_guard_raises_rather_than_silently_skipping(monkeypatch):
+    """A guard that quietly does not run is worse than no guard.
+
+    What it guards — a missing worker env — is itself silent: every leg still runs
+    and produces plausible numbers, and only the reproducibility claim is void. So a
+    too-old run-farm must be an error, not a shrug.
+    """
+    import builtins
+
+    real = builtins.__import__
+
+    def no_gauntlet(name, *a, **kw):
+        if name == "run_farm.gauntlet":
+            raise ImportError("no RemoteEnvPinned in run-farm 0.2.0")
+        return real(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_gauntlet)
+    with pytest.raises(RuntimeError, match="run-farm > 0.2.0"):
+        C._load_env_guard()
