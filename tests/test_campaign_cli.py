@@ -481,5 +481,5 @@ def test_the_env_guard_raises_rather_than_silently_skipping(monkeypatch):
         return real(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", no_gauntlet)
-    with pytest.raises(RuntimeError, match="run-farm > 0.2.0"):
+    with pytest.raises(RuntimeError, match="run-farm >= 0.3.0"):
         C._load_env_guard()
