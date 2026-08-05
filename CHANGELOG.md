@@ -4,7 +4,59 @@ All notable changes to this project are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features).
 
-## [Unreleased] — Phase 4: the evolution loop over time
+## [Unreleased]
+
+## [0.3.0] — The evodevo stack, and the campaign layer that runs it on rented hardware
+
+**PyPI's 0.2.0 was tagged at Phase 0** — the Milocco–Uller calibration and nothing after
+it. Thirteen commits accumulated behind that tag: Phases 1 through 4 of the evodevo stack,
+the run-farm consumption, the campaign CLI, and the fleet work below. A downstream
+installing `jax-morpho` from PyPI has had none of it.
+
+A minor bump, per this project's rule that pre-1.0 minor means features.
+
+### Added — the campaign layer (a run-farm consumer)
+- **`jax_morpho.runs` / `jax_morpho.runfns` / `jax_morpho.farm_config` / `campaign.py`** —
+  config-hashed identity, restart-exact checkpoints, a streamed per-generation ledger, and
+  an **enforced** dollar cap. `evodevo_run` dispatches `evolve` (one lineage) and
+  `mu_gate` (the Milocco–Uller Fig 3C known-answer arm), so **every campaign carries its
+  own validation ladder** rather than citing one from the test suite.
+- **`jax-morpho-campaign` CLI** — `plan` / `estimate` / `local` / `fleet`. `estimate`
+  reports GPU-hours *and* wall-clock alongside dollars, because a GPU-hour-only price
+  hides an infeasible schedule.
+- **A productized RunPod bootstrap + fast-fail fleet executor.** RunPod runs the onstart as
+  the pod's main process and injects no sshd, so a bare image is unreachable unless the
+  onstart starts its own; and readiness is split into an SSH grace and an engine-install
+  budget so a dead host fails over in minutes rather than a full timeout.
+- **`--remote-env`, defaulting to `XLA_FLAGS=--xla_gpu_autotune_level=0`.** The worker
+  arrives over a non-interactive `ssh host cmd` that sources no profile, so onstart cannot
+  set a variable it must read at process start — and JAX reads `XLA_FLAGS` when the backend
+  initialises, so a RunFn setting it is already too late. XLA GPU autotuning picks kernels
+  per process: measured at campaign scale, a cross-process resume diverged from the
+  uninterrupted run in **1 of 3 attempts (14587/20000 entries)**; the flag makes it 5/5
+  identical, and slightly faster. A campaign that checkpoints is promising resume
+  exactness, so the safe value is the default and looseness is the explicit choice
+  (`--remote-env none`). Guarded before renting by run-farm's `RemoteEnvPinned`.
+- **Provenance in every result** — `{"env": {backend, device, jax_version, xla_flags}}`.
+  A number without its backend is not reproducible in practice: the same lineage gives
+  different answers in different processes under autotuning, and CPU digests differ between
+  machines at identical library versions. Nested under `env` so it can never collide with
+  a measurement key.
+- **`--cuda` and `--remote-python`.** `jax-morpho` depends on plain `jax`, so installing
+  the engine first pulls the CPU wheel and the box computes on CPU *while looking, from the
+  driver's side, exactly like a successful GPU campaign*. `--cuda` puts the CUDA wheels
+  first; `--remote-python` makes the install and the worker derive from one interpreter, so
+  installing into a python the worker never looks at is unrepresentable rather than merely
+  unlikely.
+
+  Both were found by real rentals. Verified end to end on RunPod: 7 legs, `backend == gpu`
+  and the pinned `xla_flags` in **7/7** result records, M-U gate PASS, teardown
+  `verify: gone`.
+
+### Requires
+- **`run-farm >= 0.3.0`** (base, not just the `fleet` extra). `_build_fleet` calls
+  `ProviderExecutor(remote_env=...)`, which older run-farm does not accept — a `TypeError`
+  at launch, not a graceful degradation.
 
 ### Added — `evolution` (layer E)
 - **The loop**: population → develop → select → reproduce → repeat, with the §5c
@@ -40,7 +92,7 @@ All notable changes to this project are documented here. Format based on
 
 109 tests green (13 new). Demo: `examples/demo_phase4_gate.py`.
 
-## [Unreleased-1-3] — Phases 1–3: our development, end to end, and the loop closed
+### Phases 1–3: our development, end to end, and the loop closed
 
 ### Added — docs
 - **`docs/ENVIRONMENT.md`** — a proposal for the tiered environment & ecology
