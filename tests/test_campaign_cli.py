@@ -483,3 +483,18 @@ def test_the_env_guard_raises_rather_than_silently_skipping(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_gauntlet)
     with pytest.raises(RuntimeError, match="run-farm >= 0.3.0"):
         C._load_env_guard()
+
+
+def test_the_env_guard_returns_the_three_symbols_it_promises():
+    """The success path: with a new-enough run-farm it hands back exactly what
+    `cmd_fleet` unpacks. Asserting the names (not just "it did not raise") is what
+    makes this catch a future reshuffle of the tuple."""
+    GauntletError, RemoteEnvPinned, require_gauntlet = C._load_env_guard()
+    assert issubclass(GauntletError, Exception)
+    assert RemoteEnvPinned.__name__ == "RemoteEnvPinned"
+    assert callable(require_gauntlet)
+    # And it is the real check, not a stand-in: it fails a missing var.
+    class _Exec:
+        remote_env = {}
+    r = RemoteEnvPinned(_Exec(), {"XLA_FLAGS": "--xla_gpu_autotune_level=0"})()
+    assert not r.ok and r.blocking
