@@ -53,7 +53,6 @@ from run_farm import (
 )
 # `_ssh` is the same host-probe helper the base ProviderExecutor uses (shared so
 # our fast-fail readiness check keeps run-farm's SSH keepalive/timeout options).
-from run_farm.gauntlet import GauntletError, RemoteEnvPinned, require_gauntlet
 from run_farm.provider_exec import _ssh
 from run_farm.protocols import HostProbeFailed
 
@@ -274,6 +273,11 @@ def cmd_fleet(spec: dict, args) -> int:  # pragma: no cover — rents real hardw
     # none`): a check that requires nothing cannot fail, and would be decoration.
     if executor.remote_env:
         try:
+            GauntletError, RemoteEnvPinned, require_gauntlet = _load_env_guard()
+        except RuntimeError as e:
+            print(f"\n{e}", file=sys.stderr)
+            return 6
+        try:
             require_gauntlet([RemoteEnvPinned(executor, executor.remote_env)])
         except GauntletError:
             print("\nGAUNTLET FAILED — nothing rented, nothing spent.", file=sys.stderr)
@@ -357,6 +361,33 @@ def _install_block(cuda: bool, python: str = "python") -> str:
 # costs more compile time than it recovers. A campaign that checkpoints is promising
 # resume exactness, so the safe value is the default and looseness is the explicit choice.
 DEFAULT_REMOTE_ENV = {"XLA_FLAGS": "--xla_gpu_autotune_level=0"}
+
+
+def _load_env_guard():
+    """Import the `remote_env` gauntlet check, LAZILY and loudly.
+
+    `RemoteEnvPinned` landed in run-farm after 0.2.0, so it is not in any published
+    release yet. Importing it at module scope made `import jax_morpho.campaign`
+    — and therefore the whole test suite — fail against a PyPI-installed run-farm,
+    while passing here because run-farm is installed EDITABLE from a checkout. That
+    is the local-env-differs-from-target trap, and it cost a red CI run to find.
+
+    Deferred to the fleet path, which is the only caller that needs it, and it
+    RAISES rather than degrading: a guard that silently does not run is worse than
+    no guard, since the thing it guards (a missing worker env) is itself silent.
+    Failing here still costs nothing — it is before any host is rented.
+    """
+    try:
+        from run_farm.gauntlet import (GauntletError, RemoteEnvPinned,
+                                       require_gauntlet)
+    except ImportError as e:                        # pragma: no cover - env-dependent
+        raise RuntimeError(
+            "the --remote-env guard needs run-farm > 0.2.0 (RemoteEnvPinned), and "
+            f"the installed run-farm does not provide it: {e}. Install run-farm from "
+            "its main branch, or pass `--remote-env none` to ship no worker env "
+            "(which forfeits the resume-exactness guarantee)."
+        ) from e
+    return GauntletError, RemoteEnvPinned, require_gauntlet
 
 
 def resolve_remote_env(pairs: list[str] | None) -> dict[str, str]:

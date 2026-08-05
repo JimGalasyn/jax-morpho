@@ -61,7 +61,15 @@ scale = ["jax-md>=0.2"]
 # serverless executor and the S3 object-store registry/sink backend. The Vast and
 # RunPod brokers are stdlib-only and need no extra. Install to point a campaign at
 # rented hardware:  pip install '.[fleet]'
-fleet = ["run-farm[modal,s3]>=0.1.1"]
+#
+# The FLOOR IS DELIBERATELY AHEAD OF PyPI. `cmd_fleet` uses run-farm's
+# `RemoteEnvPinned` guard and `ProviderExecutor(remote_env=...)`, both of which
+# landed after 0.2.0 and are not in any published release yet, so this extra is
+# currently satisfiable only from run-farm's main branch. Stating the real
+# requirement is better than a floor that resolves and then ImportErrors at run
+# time -- which is exactly what `run-farm>=0.1.1` did. Resolves itself the moment
+# run-farm 0.2.1 ships; the base install is unaffected either way.
+fleet = ["run-farm[modal,s3]>=0.2.1"]
 
 [project.scripts]
 # Plan / cost / launch an evodevo fleet campaign (run-farm consumer).
