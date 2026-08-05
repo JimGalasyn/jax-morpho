@@ -382,9 +382,8 @@ def _load_env_guard():
                                        require_gauntlet)
     except ImportError as e:                        # pragma: no cover - env-dependent
         raise RuntimeError(
-            "the --remote-env guard needs run-farm > 0.2.0 (RemoteEnvPinned), and "
-            f"the installed run-farm does not provide it: {e}. Install run-farm from "
-            "its main branch, or pass `--remote-env none` to ship no worker env "
+            "the --remote-env guard needs run-farm >= 0.3.0 (RemoteEnvPinned), and "
+            f"the installed run-farm does not provide it: {e}. Upgrade run-farm, or pass `--remote-env none` to ship no worker env "
             "(which forfeits the resume-exactness guarantee)."
         ) from e
     return GauntletError, RemoteEnvPinned, require_gauntlet

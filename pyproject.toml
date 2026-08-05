@@ -44,7 +44,14 @@ dependencies = [
   # DESIGN.md §5b leans on even for a single local lineage. run-farm's base deps are
   # only jax + numpy (both already required above; the cloud SDKs live behind its own
   # `modal`/`s3` extras), so the engine-only user pulls zero net-new transitive deps.
-  "run-farm>=0.1.1",
+  #
+  # FLOOR 0.3.0, and it is a real floor, not caution. `campaign._build_fleet` calls
+  # `ProviderExecutor(remote_env=...)`, which 0.2.0 does not accept — against an older
+  # run-farm that is a `TypeError` at launch, not a graceful degradation. CI proved it
+  # twice: first an ImportError on `RemoteEnvPinned`, then this TypeError once the
+  # import was deferred. Both were one root cause — depending on an API that was not
+  # published yet — and the cure was releasing run-farm 0.3.0, not working around it.
+  "run-farm>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -61,15 +68,9 @@ scale = ["jax-md>=0.2"]
 # serverless executor and the S3 object-store registry/sink backend. The Vast and
 # RunPod brokers are stdlib-only and need no extra. Install to point a campaign at
 # rented hardware:  pip install '.[fleet]'
-#
-# The FLOOR IS DELIBERATELY AHEAD OF PyPI. `cmd_fleet` uses run-farm's
-# `RemoteEnvPinned` guard and `ProviderExecutor(remote_env=...)`, both of which
-# landed after 0.2.0 and are not in any published release yet, so this extra is
-# currently satisfiable only from run-farm's main branch. Stating the real
-# requirement is better than a floor that resolves and then ImportErrors at run
-# time -- which is exactly what `run-farm>=0.1.1` did. Resolves itself the moment
-# run-farm 0.2.1 ships; the base install is unaffected either way.
-fleet = ["run-farm[modal,s3]>=0.2.1"]
+# Matches the base floor: `cmd_fleet` needs run-farm's `RemoteEnvPinned` guard and
+# `ProviderExecutor(remote_env=...)`, both of which landed in 0.3.0.
+fleet = ["run-farm[modal,s3]>=0.3.0"]
 
 [project.scripts]
 # Plan / cost / launch an evodevo fleet campaign (run-farm consumer).
