@@ -85,6 +85,11 @@ packages = ["src/jax_morpho"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  # Registered so `-m "not slow"` is available and an unknown-mark warning does
+  # not hide a genuine typo in some future marker.
+  "slow: multi-second runs (the Wagner canalization trajectory)",
+]
 
 [tool.coverage.run]
 source = ["jax_morpho"]

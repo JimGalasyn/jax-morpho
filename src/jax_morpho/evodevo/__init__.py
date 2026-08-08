@@ -23,6 +23,13 @@ insertion) and selection seams. Where Phase 3 asked "does `Δz̄ = Gβ` predict 
 generation?", Phase 4 asks whether it *compounds* — and finds it does only while
 genetic variance is healthy.
 
+``wagner_grn`` (the Siegal-Bergman discrete gene network) is **deliberately not
+re-exported here** — import it as ``from jax_morpho.evodevo import wagner_grn``.
+It is a different object from ``genome_map.GRN`` (a continuous spatial field)
+despite both being called "GRN", and its ``develop`` would collide with
+``develop_genome``/``develop_mechanical`` below. Please do not flatten it in;
+the note at the ``pipeline`` import records what that costs.
+
 See docs/DESIGN.md.
 """
 from __future__ import annotations
