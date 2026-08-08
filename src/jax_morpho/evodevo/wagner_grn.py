@@ -198,10 +198,29 @@ def develop(W: jnp.ndarray, s0: jnp.ndarray, a: float = DEFAULT_A,
 
 
 # Batched development over a whole population (one call, no Python loop).
-develop_pop = jax.jit(
+_develop_pop_jit = jax.jit(
     jax.vmap(develop, in_axes=(0, 0, None, None, None, None)),
     static_argnames=("devsteps", "window"),
 )
+
+
+def develop_pop(W: jnp.ndarray, s0: jnp.ndarray, a: float = DEFAULT_A,
+                devsteps: int = DEFAULT_DEVSTEPS, window: int = DEFAULT_WINDOW,
+                eps: float = DEFAULT_EPS) -> DevResult:
+    """`develop`, batched over a population: W is (B, N, N), s0 is (B, N).
+
+    A thin wrapper supplying defaults, because `vmap`'s `in_axes` tuple does not.
+    Bare, this was `jax.jit(jax.vmap(develop, in_axes=(0, 0, None, None, None,
+    None)))`, and a 6-entry `in_axes` REQUIRES six positional arguments —
+    `develop_pop(W, s0)` raised `ValueError: len(in_axes)=6, len(args)=2` rather
+    than using the defaults `develop` declares.
+
+    That is why a downstream caller had quietly built its own
+    `jax.jit(jax.vmap(develop, in_axes=(0, 0)))` alongside this one: two batchers
+    for one operation, the second compiled separately, because the published one
+    could not be called the obvious way. Fixed here rather than there.
+    """
+    return _develop_pop_jit(W, s0, a, devsteps, window, eps)
 
 
 # --------------------------------------------------------------------------- #
