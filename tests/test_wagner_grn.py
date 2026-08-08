@@ -35,6 +35,35 @@ def test_deterministic_xla_flags_appends_idempotently_and_keeps_caller_flags():
     assert kept.count(flag) == 1
 
 
+def test_develop_pop_is_callable_with_just_the_batched_arguments():
+    """`develop_pop(W, s0)` must work — the defaults are the whole point.
+
+    Bare `jax.vmap(..., in_axes=(0,)*2 + (None,)*4)` requires all six positional
+    arguments and raises `ValueError: len(in_axes)=6, len(args)=2` otherwise, so
+    a caller reading `develop`'s signature and supplying only the batched inputs
+    got an error instead of the defaults. That is exactly what drove one consumer
+    to build a duplicate batcher.
+
+    Also pins agreement with the unbatched `develop`, so the wrapper cannot start
+    passing the defaults through in the wrong order without failing.
+    """
+    net = wg.random_network(jax.random.PRNGKey(3), n=8)
+    W = jnp.stack([net.W, net.W * 0.5])
+    s0 = jnp.stack([net.s0, net.s0])
+
+    batched = wg.develop_pop(W, s0)                       # two args only
+    assert batched.phenotype.shape == (2, 8)
+
+    for i, w in enumerate((net.W, net.W * 0.5)):
+        one = wg.develop(w, net.s0)
+        assert jnp.allclose(batched.phenotype[i], one.phenotype, atol=1e-6)
+        assert bool(batched.stable[i]) == bool(one.stable)
+
+    # Explicit non-default kwargs still reach `develop` (order not scrambled).
+    short = wg.develop_pop(W, s0, devsteps=3, window=2)
+    assert not jnp.allclose(short.phenotype, batched.phenotype, atol=1e-6)
+
+
 def test_sigma_range_and_fixed_point():
     """sigma is bounded in [-1, 1], strictly interior for finite inputs, and a
     converged network reports itself stable."""
