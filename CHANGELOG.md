@@ -6,6 +6,16 @@ All notable changes to this project are documented here. Format based on
 
 ## [Unreleased]
 
+- **CPU–GPU equivalence of `equilibrate`, in distribution** (`tests/test_backend_equivalence.py`).
+  The claim a backend comparison can make is "the same fixed point", not "the same bits":
+  bit-identity is a same-process property and a hardcoded digest is green only on the host
+  that recorded it. Over 12 jittered scenes, the per-seed GPU-vs-CPU disagreement must sit
+  inside a floor measured on the CPU alone — the `equilibrate` vs `equilibrate_chunked`
+  code-path difference, or 32 ULP of the coordinates — and a planted 1 % change of θ must
+  exceed that floor by ≥ 10⁶, so the tolerance is calibrated on a null and an effect. Skips
+  loudly without a GPU (CI is `JAX_PLATFORMS=cpu`) and fails instead under
+  `JAX_MORPHO_REQUIRE_GPU=1`. Measured: 1–4 ULP on an RTX 4090 Laptop at x64.
+
 ## [0.3.0] — The evodevo stack, and the campaign layer that runs it on rented hardware
 
 **PyPI's 0.2.0 was tagged at Phase 0** — the Milocco–Uller calibration and nothing after
