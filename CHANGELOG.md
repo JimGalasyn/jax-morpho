@@ -6,6 +6,20 @@ All notable changes to this project are documented here. Format based on
 
 ## [Unreleased]
 
+- **CPU–GPU equivalence of `equilibrate`, up to a rigid motion** (`tests/test_backend_equivalence.py`).
+  The claim a backend comparison can make is "the same fixed point", not "the same bits":
+  bit-identity is a same-process property and a hardcoded digest is green only on the host
+  that recorded it. The energy is invariant under rigid motions and the solver's path picks
+  the gauge, so the comparison is of pairwise distances, not raw coordinates. Over 12
+  jittered scenes the GPU-vs-CPU disagreement must sit inside 32 ULP of the largest
+  distance, and that tolerance is calibrated on the CPU alone, in CI, from both sides: a
+  change of path to the same fixed point (`newton_tol` 1e-4 → 1e-3) must land inside it
+  (measured ≤ 0.04 floors), and a relative change of 1e-13 in `r_eq` must land outside it
+  (measured 12 floors). Skips loudly without a GPU (CI is `JAX_PLATFORMS=cpu`) and fails
+  instead under `JAX_MORPHO_REQUIRE_GPU=1`. Measured: ≤ 0.05 floors on an RTX 4090 Laptop
+  at x64. Not claimed: a heterogeneous θ, where the same change of path moves the shape by
+  up to 11 floors and the floor has to scale with the residual.
+
 ## [0.3.0] — The evodevo stack, and the campaign layer that runs it on rented hardware
 
 **PyPI's 0.2.0 was tagged at Phase 0** — the Milocco–Uller calibration and nothing after
